@@ -1,0 +1,135 @@
+name: LEStra CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'rustfmt.toml'
+      - '.cargo/**'
+      - '.github/workflows/ci.yml'
+      - 'crates/**'
+      - 'apps/**'
+      - 'tests/**'
+      - 'examples/**'
+      - 'benchmarks/**'
+      - 'scripts/**'
+      - 'spec/test-vectors/**'
+
+  pull_request:
+    branches: [main]
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  changes:
+    name: Detect code changes
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+
+    outputs:
+      rust: ${{ steps.filter.outputs.rust || steps.force.outputs.rust }}
+
+    steps:
+      - name: Detect relevant changes in PR
+        if: github.event_name == 'pull_request'
+        id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            rust:
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'rustfmt.toml'
+              - '.cargo/**'
+              - '.github/workflows/ci.yml'
+              - 'crates/**'
+              - 'apps/**'
+              - 'tests/**'
+              - 'examples/**'
+              - 'benchmarks/**'
+              - 'scripts/**'
+              - 'spec/test-vectors/**'
+
+      - name: Run checks on push or manual dispatch
+        if: github.event_name != 'pull_request'
+        id: force
+        run: echo "rust=true" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Rust formatting and Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+  test:
+    name: Test / ${{ matrix.os }}
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Unit and integration tests
+        run: cargo test --workspace --all-features
+
+  required:
+    name: lestra-ci-required
+    needs: [changes, lint, test]
+    if: always()
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Verify required jobs
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          if [[ "$CHANGES" != 'success' ]]; then
+            echo 'Change detection failed.'
+            exit 1
+          fi
+
+          if [[ "$RUST" == 'true' ]]; then
+            [[ "$LINT" == 'success' && "$TEST" == 'success' ]] || exit 1
+          else
+            [[ "$RUST" == 'false' && "$LINT" == 'skipped' && "$TEST" == 'skipped' ]] || exit 1
+          fi

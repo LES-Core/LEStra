@@ -1,0 +1,11 @@
+/target/
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.*
+!.env.example
