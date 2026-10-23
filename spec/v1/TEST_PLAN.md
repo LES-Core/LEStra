@@ -1,37 +1,47 @@
-# LEStra v1 Test Plan — revision 2
+# LEStra v1 — M0.3 verification plan (revision 3)
 
-**Status:** Planned tests, not generated/executed vectors. A successful parser test is not a cryptographic security review.
+**Status:** Deterministic *candidate* reference vectors generated and locally tested. No independent Rust/Noise verification, security audit or network stress test has been completed.
 
-## Wire codec
+## Local generator and smoke tests
 
-- Verify exact 26-byte header offsets, `LSTR` magic, big-endian fields and all proposed type values.
-- Validate size boundaries: 0, 25, 26, 27, 1199, 1200, 1201 bytes.
-- Reject unknown major/type, nonzero flags, trailing body bytes, mismatched declared length, invalid handshake counters and oversized datagrams.
-- Round-trip known fixed fixture bytes, independently from Rust.
+Install a separate Python environment and use the version pinned in `tools/requirements-vectors.txt`:
 
-## Handshake
+```bash
+python -m pip install -r tools/requirements-vectors.txt
+python tools/generate_vectors.py --check
+python tools/test_vectors.py -v
+```
 
-- Fixed test-only initiator/responder static and ephemeral keys.
-- Exact Noise IK byte sequence and transcript hash, encrypted handshake payload, responder identity binding, client ACL and server CID binding.
-- Verify wrong server pin, unauthorized client, transcript tampering, replayed INITIAL and altered HANDSHAKE reject.
-- Verify byte-identical handshake retransmission and that no server application payload is emitted before CONFIRM.
-- Stress simultaneous half-open handshakes and forged source addresses; enforce resource and amplification budgets.
+To regenerate and review fixture differences:
 
-## Data, AEAD and replay
+```bash
+python tools/generate_vectors.py
+```
 
-- Record fixed session-direction keys, header bytes, packet number, nonce, plaintext, ciphertext/tag (only in test vectors).
-- Test pkt#0, pkt#1, window boundaries, reordered valid packets, duplicates, tag/header modification.
-- Assert bitmap changes only after valid AEAD; invalid large-counter packets do not advance the replay window.
-- Check direction key separation, counter limit, restart causing new Noise handshake and session key.
-- Confirm CONFIRM, DATA and CLOSE share directional packet-number space.
+This Python reference is deliberately written for determinism and fixture generation only. It uses the `cryptography` library for X25519 and ChaCha20-Poly1305, but it manually orchestrates Noise state and HKDF. **Do not ship it as a security implementation** or regard successful self-checks as independent cross-implementation agreement. Fixture contains exposed **TEST-ONLY** secret keys.
 
-## Network / integration
+## Expected canonical facts
 
-- UDP packet loss, jitter, duplication, reordering, truncation, NAT rebinding and MTU shrink.
-- Payload > negotiated limit errors without fragmentation.
-- Fairness and pacing under a saturated link; measure throughput, latency and CPU.
-- Build a second non-Rust codec consumer for independent interoperability.
+- INITIAL: 26-byte header + 130-byte Noise message = 156-byte UDP payload.
+- HANDSHAKE: 26-byte header + 82-byte Noise message = 108-byte UDP payload.
+- CONFIRM/READY: 26-byte header + 16-byte tag = 42-byte UDP payload each.
+- Protected data uses 26-byte header as ChaCha20-Poly1305 AAD, per-direction Noise `Split()` key, packet-number-derived nonce.
+- `DATA` payload capacity at 1200-byte outer UDP payload cap: 1158 bytes.
 
-## Required artifacts before approval
+## Negative cases required before freeze
 
-`spec/v1/vectors/*.json` with exact verified binary fixtures (hex), a generator with pinned dependency versions, and an independent verifier. No fixture content should be guessed or written by hand.
+1. Unsupported magic/version/type, nonzero flags, lengths, truncated or trailing bytes; no panic/large allocation.
+2. Mismatched pinned server static public key, unauthorized client key, wrong Noise payload header echo, swapped client/server CIDs.
+3. Mutated AEAD header or ciphertext/tag, wrong key direction, invalid nonce, reused packet number.
+4. Replayed protected packet; reordered unseen packet within 1024-packet window; invalid high packet number does not move window.
+5. Duplicate INITIAL from a new source; floods under source-spoofing; amplification never exceeds 3:1 prior to confirmation.
+6. Lost INITIAL, HANDSHAKE, CONFIRM and READY; cached byte-identical retransmission; READY retry on a duplicate CONFIRM; no duplicate application delivery.
+7. Crash/restart, session expiry and 2^32 counter limit: fresh session and new ephemeral key mandatory.
+8. Shrinking MTU, congestion/loss and large number of untrusted half-open sessions.
+9. Independent Rust & non-Rust fixture verification with fixed ephemeral keys and full Noise transcript byte match.
+
+## Merge/implementation gate
+
+- Documentation and fixture generation can be reviewed as **M0.3 draft**.
+- **Do not approve the wire format for stable v1 or merge a crypto implementation** until an independent verifier reproduces the reference results and a reviewer signs off nonce/AAD, replay logic and handshake state machine.
+- Rust constant `PROTOCOL_MAJOR_VERSION` remains `0` until wire freeze.
