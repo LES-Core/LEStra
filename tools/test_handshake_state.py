@@ -38,6 +38,10 @@ class ServerHandshake:
     handshake_response: bytes = b"H" * 108
     ready_response: bytes = b"R" * 42
     budget: AmplificationBudget = field(default_factory=AmplificationBudget)
+    handshake_sends: int = 0
+    ready_sends: int = 0
+    max_handshake_sends: int = 5
+    max_ready_sends: int = 5
 
     def on_initial(self, source: str, packet: bytes, valid_noise_acl: bool) -> bytes | None:
         if len(packet) != 156 or not valid_noise_acl:
@@ -52,7 +56,10 @@ class ServerHandshake:
         elif source != self.source or fingerprint != self.initial_digest:
             return None
         self.budget.note_receive(len(packet))
+        if self.handshake_sends >= self.max_handshake_sends:
+            return None
         if self.budget.try_send(len(self.handshake_response)):
+            self.handshake_sends += 1
             return self.handshake_response
         return None
 
@@ -71,7 +78,12 @@ class ServerHandshake:
         else:
             # Only idempotently resend cached READY for an identical CONFIRM.
             self.budget.note_receive(len(packet))
-        return self.ready_response if self.budget.try_send(len(self.ready_response)) else None
+        if self.ready_sends >= self.max_ready_sends:
+            return None
+        if self.budget.try_send(len(self.ready_response)):
+            self.ready_sends += 1
+            return self.ready_response
+        return None
 
     def deliver_data(self, source: str, valid_new_aead: bool) -> bool:
         if self.state != "ESTABLISHED" or source != self.source or not valid_new_aead:

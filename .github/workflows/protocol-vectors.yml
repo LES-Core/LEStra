@@ -48,6 +48,7 @@ jobs:
       - run: python tools/generate_vectors.py --check
       - run: python tools/test_vectors.py -v
       - run: python tools/test_handshake_state.py -v
+      - run: python tools/test_handshake_network.py -v
 
   rust-independent:
     name: Rust independent Noise verifier

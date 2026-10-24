@@ -56,3 +56,9 @@ This Python reference is deliberately written for determinism and fixture genera
 - [`.github/workflows/protocol-vectors.yml`](../../.github/workflows/protocol-vectors.yml) executes Python fixtures/model tests and Rust validation for relevant changes, including the M0.3 documentation branch.
 
 Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining security review gates are formally closed.
+
+## Virtual-time loss and overload simulations
+
+- [NETWORK_FAULTS.md](NETWORK_FAULTS.md) documents deterministic packet-loss, timeout, duplicate, delayed READY and admission-burst model tests.
+- Run `python tools/test_handshake_network.py -v` in CI alongside the existing Python and Rust fixture verifiers.
+- Simulation does not replace real UDP socket tests or satisfy the independent security-review gate.
