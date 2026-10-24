@@ -27,3 +27,7 @@ The Python reference requires dependencies in `tools/requirements-vectors.txt`; 
 `tests/udp_loopback.rs` uses OS UDP sockets on `127.0.0.1` to exchange Noise IK and authenticated transport fixture packets, including positive and negative framing/source/replay cases. Run it with `cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml --test udp_loopback`.
 
 It is a **test-only harness**, not an LEStra implementation or production VPN. All fixed identity and ephemeral keys in this test are intentionally public.
+
+## Parser verification
+
+See `tests/parser.rs` and [`../../spec/v1/PARSER_FUZZING.md`](../../spec/v1/PARSER_FUZZING.md) for committed binary negative fixtures, property tests and optional cargo-fuzz instructions.

@@ -89,3 +89,5 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 **Blocking before wire freeze / M0.4 and M0.5:** independent Rust/Noise verification of the deterministic transcript and Split keys; protocol review of CID, authenticated header and retry-state handling; reproducible positive and negative codec fixtures; DoS and congestion review. Until resolved, keep `PROTOCOL_MAJOR_VERSION=0` in Rust source, even though the draft header uses proposed `0x01`.
 
 References: https://noiseprotocol.org/noise.html , https://www.rfc-editor.org/rfc/rfc8439 , https://www.rfc-editor.org/rfc/rfc8085 , https://www.rfc-editor.org/rfc/rfc8899
+
+- [PARSER_FUZZING.md](PARSER_FUZZING.md): framing negative vectors and bounded fuzz/property tests.

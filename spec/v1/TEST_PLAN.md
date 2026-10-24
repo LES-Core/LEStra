@@ -68,3 +68,9 @@ Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining 
 - `tools/protocol-vectors-rust/tests/udp_loopback.rs` exchanges real packets over two local OS UDP sockets, authenticates the actual Noise IK handshake with `snow`, validates CONFIRM/READY and bidirectional DATA with independent AEAD/AAD, and rejects invalid framing, wrong source tuple, tampered tags and duplicate DATA.
 - Read timeouts are tested without opening a session. These tests use **public deterministic test keys**. They do **not** exercise real server load, production session management, TUN, pacing or VPN routing.
 - Run `cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml --test udp_loopback` (also included by the protocol-vector CI).
+
+## Parser negative vectors and fuzz testing
+
+- [PARSER_FUZZING.md](PARSER_FUZZING.md) documents byte-for-byte invalid framing fixtures and the allocation-free test-only parser.
+- `cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml --test parser` is included by the Rust protocol CI.
+- Optional cargo-fuzz is not run by CI; acceptance of a header is not authentication of a ciphertext.
