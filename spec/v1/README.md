@@ -78,6 +78,8 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 
 - [HANDSHAKE.md](HANDSHAKE.md) defines handshake and retry policy.
 - [TEST_PLAN.md](TEST_PLAN.md) describes required testing and acceptance criteria.
+- [STATE_MACHINE.md](STATE_MACHINE.md) defines handshake transitions, replay-cache and anti-amplification rules.
+- [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes independent test-only Rust Noise/AEAD fixture checks (pending CI verification).
 - [vectors/native_udp_ik.json](vectors/native_udp_ik.json) contains **test-only deterministic candidate vectors** generated from [../../tools/generate_vectors.py](../../tools/generate_vectors.py) (relative path: `tools/` at repository root). All private keys in vectors are **public test values**, NEVER production identities.
 
 **Blocking before wire freeze / M0.4 and M0.5:** independent Rust/Noise verification of the deterministic transcript and Split keys; protocol review of CID, authenticated header and retry-state handling; reproducible positive and negative codec fixtures; DoS and congestion review. Until resolved, keep `PROTOCOL_MAJOR_VERSION=0` in Rust source, even though the draft header uses proposed `0x01`.
