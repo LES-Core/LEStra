@@ -74,3 +74,9 @@ Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining 
 - [PARSER_FUZZING.md](PARSER_FUZZING.md) documents byte-for-byte invalid framing fixtures and the allocation-free test-only parser.
 - `cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml --test parser` is included by the Rust protocol CI.
 - Optional cargo-fuzz is not run by CI; acceptance of a header is not authentication of a ciphertext.
+
+## M0.3 consistency review
+
+- [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md) distinguishes passing automated checks from independent security sign-off.
+- Parser fixtures now explicitly reject `CONFIRM/READY` with nonzero packet numbers and `DATA/CLOSE` with zero packet numbers; the loopback harness uses the same reference decoder.
+- Final review still requires an agreed transport congestion/pacing strategy, key enrollment/revocation, CID lifecycle and real production implementation fuzzing. Do not assert a production-ready wire standard based on a green fixture CI.

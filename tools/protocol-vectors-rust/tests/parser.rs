@@ -32,6 +32,26 @@ fn negative_binary_fixtures_fail_closed() {
     }
 }
 #[test]
+fn packet_type_counter_mapping_is_strict_for_all_protected_types() {
+    let fixture = fixtures();
+    let negative = fixture["negative"].as_array().expect("negative array");
+    for case in [
+        "confirm-nonzero-packet-number",
+        "ready-nonzero-packet-number",
+        "data-zero-packet-number",
+        "close-zero-packet-number",
+    ] {
+        let entry = negative.iter().find(|item| item["name"] == case)
+            .expect("missing committed negative fixture");
+        assert!(decode_envelope(&buf(entry)).is_err(), "{case}");
+    }
+    let positive = fixture["positive"].as_array().expect("positive array");
+    for entry in positive.iter().skip(2) {
+        assert!(decode_envelope(&buf(entry)).is_ok(), "{}", entry["name"]);
+    }
+}
+
+#[test]
 fn syntactically_valid_ciphertext_corruption_needs_aead() {
     let f = fixtures();
     let mut b = buf(&f["positive"][4]); // first DATA

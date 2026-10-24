@@ -12,3 +12,5 @@ Wire protocol documentation is independent from Rust crate semantic versions, th
 Tools: `tools/generate_vectors.py`, `tools/test_vectors.py`, and pinned `tools/requirements-vectors.txt`.
 
 **This is a review draft, not an approved or independently audited protocol.** Keep `PROTOCOL_MAJOR_VERSION=0` in source until all M0.3 review gates close.
+
+- [`v1/REVIEW_FINDINGS.md`](v1/REVIEW_FINDINGS.md): consistency review, closed test-level issues, deployment/security gates and merge policy.

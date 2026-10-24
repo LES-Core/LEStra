@@ -40,6 +40,8 @@ Header length is **26 bytes**. `body_len` and UDP datagram length MUST agree. Al
 
 Unrecognized packet types, unsupported `major`, non-zero flags, bad lengths and impossible header combinations are rejected; untrusted inputs MUST NOT trigger unrestricted allocation.
 
+**Structural packet-number constraints:** `INITIAL`, `HANDSHAKE`, `CONFIRM`, and `READY` require packet number **0**. `DATA` and `CLOSE` require numbers **1 through 2^32 − 1**. The packet decoder checks these public invariants; the authenticated session layer must additionally enforce direction, handshake state, replay suppression, correct CIDs and AEAD verification.
+
 ## Connection identifiers and handshake
 
 The initiator randomly generates a fresh, nonzero 64-bit **client receive CID**, and the responder randomly generates a fresh, nonzero 64-bit **server receive CID**, with collision checks among live sessions. A CID is *not* a secret or identity proof.
@@ -83,11 +85,13 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 - [CONCURRENCY_REVIEW.md](CONCURRENCY_REVIEW.md) tracks atomic replay commits, half-open quotas, and amplification-budget synchronization.
 - [NETWORK_FAULTS.md](NETWORK_FAULTS.md) tracks bounded retransmission and virtual-time loss/overload verification.
 - [UDP_LOOPBACK.md](UDP_LOOPBACK.md) documents test-only real UDP socket exchange with Noise IK and AEAD verification.
-- [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes independent test-only Rust Noise/AEAD fixture checks (pending CI verification).
+- [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes the test-only Rust Noise/AEAD verifier, whose fixture checks have passed CI; this is **not** an independent security audit.
 - [vectors/native_udp_ik.json](vectors/native_udp_ik.json) contains **test-only deterministic candidate vectors** generated from [../../tools/generate_vectors.py](../../tools/generate_vectors.py) (relative path: `tools/` at repository root). All private keys in vectors are **public test values**, NEVER production identities.
 
-**Blocking before wire freeze / M0.4 and M0.5:** independent Rust/Noise verification of the deterministic transcript and Split keys; protocol review of CID, authenticated header and retry-state handling; reproducible positive and negative codec fixtures; DoS and congestion review. Until resolved, keep `PROTOCOL_MAJOR_VERSION=0` in Rust source, even though the draft header uses proposed `0x01`.
+**Blocking before wire freeze / production crypto:** independent security review of the Noise transcript, nonce/AAD, CID and retry-state handling, DoS and congestion limits, and deployment key provisioning/revocation. Rust/Noise fixture verification and candidate parser negative tests are implemented; they do not close these review gates. Until resolved, keep `PROTOCOL_MAJOR_VERSION=0` in Rust source, even though the draft header uses proposed `0x01`.
 
 References: https://noiseprotocol.org/noise.html , https://www.rfc-editor.org/rfc/rfc8439 , https://www.rfc-editor.org/rfc/rfc8085 , https://www.rfc-editor.org/rfc/rfc8899
 
 - [PARSER_FUZZING.md](PARSER_FUZZING.md): framing negative vectors and bounded fuzz/property tests.
+
+- [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md) records M0.3 conformance decisions, outstanding risks, and merge-versus-wire-freeze criteria.

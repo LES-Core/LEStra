@@ -19,46 +19,10 @@ const LIMIT: usize = 1200;
 const MAX_PN: u64 = 1_u64 << 32;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Debug)]
-struct Packet<'a> {
-    kind: u8,
-    number: u64,
-    dcid: [u8; 8],
-    header: &'a [u8],
-    body: &'a [u8],
-}
-
-fn parse_packet(bytes: &[u8]) -> Option<Packet<'_>> {
-    if !(HEADER..=LIMIT).contains(&bytes.len())
-        || bytes.get(..4)? != b"LSTR"
-        || bytes[4] != 1
-        || !(1..=6).contains(&bytes[5])
-        || bytes[6..8] != [0, 0]
-    {
-        return None;
-    }
-    let body_len = usize::from(u16::from_be_bytes(bytes[24..26].try_into().ok()?));
-    if body_len != bytes.len() - HEADER {
-        return None;
-    }
-    let number = u64::from_be_bytes(bytes[16..24].try_into().ok()?);
-    if bytes[5] <= 2 {
-        if number != 0
-            || (bytes[5] == 1 && body_len != 130)
-            || (bytes[5] == 2 && body_len != 82)
-        {
-            return None;
-        }
-    } else if body_len < 16 || number >= MAX_PN {
-        return None;
-    }
-    Some(Packet {
-        kind: bytes[5],
-        number,
-        dcid: bytes[8..16].try_into().ok()?,
-        header: &bytes[..HEADER],
-        body: &bytes[HEADER..],
-    })
+// This loopback harness shares the same bounded framing reference
+// as the negative vectors/property tests, avoiding two divergent parsers.
+fn parse_packet(bytes: &[u8]) -> Option<lestra_protocol_vectors::Envelope<'_>> {
+    lestra_protocol_vectors::decode_envelope(bytes).ok()
 }
 
 fn fixture() -> Value {
@@ -101,11 +65,11 @@ fn aead_receive(
         return None;
     }
     let packet = parse_packet(bytes)?;
-    if packet.kind != kind || &packet.dcid != expected_dcid || seen.contains(&packet.number) {
+    if packet.kind != kind || &packet.dcid != expected_dcid || seen.contains(&packet.packet_number) {
         return None;
     }
     let mut nonce = [0_u8; 12];
-    nonce[4..].copy_from_slice(&packet.number.to_le_bytes());
+    nonce[4..].copy_from_slice(&packet.packet_number.to_le_bytes());
     let cipher = ChaCha20Poly1305::new_from_slice(key).ok()?;
     let plaintext = cipher.decrypt(
         Nonce::from_slice(&nonce),
@@ -113,7 +77,7 @@ fn aead_receive(
     ).ok()?;
     // Commit ONLY after a successful tag; this test deliberately uses a
     // HashSet, not the production-required bounded 1024-packet replay window.
-    seen.insert(packet.number);
+    seen.insert(packet.packet_number);
     Some(plaintext)
 }
 

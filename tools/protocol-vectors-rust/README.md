@@ -31,3 +31,5 @@ It is a **test-only harness**, not an LEStra implementation or production VPN. A
 ## Parser verification
 
 See `tests/parser.rs` and [`../../spec/v1/PARSER_FUZZING.md`](../../spec/v1/PARSER_FUZZING.md) for committed binary negative fixtures, property tests and optional cargo-fuzz instructions.
+
+The loopback test and parser/property tests now use one shared test-only `decode_envelope()` function; the production protocol still needs a separately reviewed implementation.

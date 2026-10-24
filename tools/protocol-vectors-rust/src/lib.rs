@@ -52,6 +52,14 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<Envelope<'_>, DecodeError> {
             if packet_number >= MAX_PACKET_NUMBER_EXCLUSIVE {
                 return Err(DecodeError::InvalidPacketNumber);
             }
+            // CONFIRM/READY are always #0; DATA/CLOSE follow a
+            // direction's initial authenticated control packet, so >= #1.
+            // State, direction and AEAD checks remain outside this decoder.
+            if ((kind == 3 || kind == 6) && packet_number != 0)
+                || ((kind == 4 || kind == 5) && packet_number == 0)
+            {
+                return Err(DecodeError::InvalidPacketNumber);
+            }
             if (kind == 4 && body_len < AEAD_TAG_LEN)
                 || (kind != 4 && body_len != AEAD_TAG_LEN) {
                 return Err(DecodeError::InvalidBodyLength);
