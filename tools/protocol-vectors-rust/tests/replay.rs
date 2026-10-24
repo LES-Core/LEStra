@@ -307,7 +307,7 @@ fn parallel_authenticated_duplicates_commit_only_once() {
             // Verify tag outside lock. Recheck replay status while holding
             // lock immediately before committing authenticated packet number.
             let cipher = ChaCha20Poly1305::new_from_slice(&key).expect("32-byte key");
-            let n = nonce(0);
+            let n = [0_u8; 12]; // PN=0; 4-byte zero prefix and LE64(0)
             let authentic = cipher.decrypt(
                 Nonce::from_slice(&n),
                 Payload { msg: &ciphertext, aad: &header },
