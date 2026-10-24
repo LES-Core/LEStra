@@ -68,7 +68,7 @@ Run the accompanying dependency-free reference model with:
 
     python tools/test_handshake_state.py -v
 
-This uses mock authentication flags, not actual Noise/AEAD. Tests cannot establish encryption correctness, nonce safety, concurrency safety or distributed DoS resistance.
+This uses mock authentication flags, not actual Noise/AEAD. Packet-number replay behavior and counter exhaustion are further detailed in [REPLAY_AND_LIMITS.md](REPLAY_AND_LIMITS.md). Tests cannot establish encryption correctness, nonce safety, concurrency safety or distributed DoS resistance.
 
 Before approving v1, verify independent Rust Noise vectors, packet AAD and nonce mapping; concurrency-safe CID/replay-cache behavior; loss/reordering/network stress; and key enrollment/revocation policy.
 
