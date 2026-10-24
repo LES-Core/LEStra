@@ -237,3 +237,100 @@ fn receive_windows_are_per_direction_and_per_session() {
     // A fresh Noise session gets a fresh window and keys, not a restored nonce.
     assert!(ReplayWindow::default().candidate(0));
 }
+
+
+// A deterministic reference model can expose mistakes in bitmap shifts and
+// window boundaries, but is not a concurrent production receiver.
+#[test]
+fn deterministic_replay_sequence_matches_set_oracle() {
+    use std::collections::BTreeSet;
+    let mut replay = ReplayWindow::default();
+    let mut observed = BTreeSet::<u64>::new();
+    let mut highest: Option<u64> = None;
+    let mut seed = 0x9e37_79b9_7f4a_7c15_u64;
+    for i in 0..30_000 {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let top = highest.unwrap_or(0);
+        let n = if i >= 29_995 {
+            match i {
+                29_995 => PACKET_LIMIT - 1,
+                29_996 => PACKET_LIMIT,
+                29_997 => u64::MAX,
+                _ => PACKET_LIMIT - 2,
+            }
+        } else {
+            match i % 6 {
+                0 => seed % 4096,
+                1 => top.saturating_add(seed % 1500),
+                2 => top.saturating_sub(seed % 1300),
+                3 => top,
+                4 => seed % 8192,
+                _ => top.saturating_add(seed % 64),
+            }
+        };
+        let should_accept = n < PACKET_LIMIT
+            && highest.is_none_or(|h| n > h || h - n < WINDOW_BITS)
+            && !observed.contains(&n);
+        assert_eq!(replay.candidate(n), should_accept, "iteration {i}, pn {n}");
+        if should_accept {
+            replay.record_authenticated(n);
+            let top = highest.map_or(n, |h| h.max(n));
+            highest = Some(top);
+            observed.insert(n);
+            observed.retain(|x| top - *x < WINDOW_BITS);
+            assert!(!replay.candidate(n));
+        }
+    }
+}
+
+#[test]
+fn parallel_authenticated_duplicates_commit_only_once() {
+    use std::sync::{Arc, Barrier, Mutex};
+    use std::thread;
+
+    let (v, key) = reference_data();
+    let fixture = &v["protected_packets"][0]; // C->S CONFIRM #0
+    let header = Arc::new(hex_field(fixture, "header_hex"));
+    let ciphertext = Arc::new(hex_field(fixture, "ciphertext_hex"));
+    let shared = Arc::new(Mutex::new(ReplayWindow::default()));
+    let barrier = Arc::new(Barrier::new(16));
+    let mut threads = Vec::new();
+
+    for _ in 0..16 {
+        let shared = Arc::clone(&shared);
+        let barrier = Arc::clone(&barrier);
+        let header = Arc::clone(&header);
+        let ciphertext = Arc::clone(&ciphertext);
+        threads.push(thread::spawn(move || {
+            // Verify tag outside lock. Recheck replay status while holding
+            // lock immediately before committing authenticated packet number.
+            let cipher = ChaCha20Poly1305::new_from_slice(&key).expect("32-byte key");
+            let n = nonce(0);
+            let authentic = cipher.decrypt(
+                Nonce::from_slice(&n),
+                Payload { msg: &ciphertext, aad: &header },
+            ).is_ok();
+            barrier.wait();
+            if !authentic {
+                return false;
+            }
+            let mut replay = shared.lock().expect("replay lock not poisoned");
+            if !replay.candidate(0) {
+                return false;
+            }
+            replay.record_authenticated(0);
+            true
+        }));
+    }
+
+    let winners = threads
+        .into_iter()
+        .map(|handle| handle.join().expect("worker must not panic") as usize)
+        .sum::<usize>();
+    assert_eq!(winners, 1, "a valid packet must be committed only once");
+    let replay = shared.lock().expect("replay lock not poisoned");
+    assert_eq!(replay.highest, Some(0));
+    assert!(!replay.candidate(0));
+}

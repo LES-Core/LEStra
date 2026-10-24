@@ -223,5 +223,50 @@ class ResourceLimitsTests(unittest.TestCase):
         self.assertEqual(pool.entries["cid-1"], ("192.0.2.1", 100, 500))
 
 
+
+
+class ConcurrentResourceLimitsTests(unittest.TestCase):
+    """Concurrency here is protected by an explicit model lock, not the server."""
+
+    def test_simultaneous_admissions_obey_global_cap(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier, Lock
+
+        pool = HalfOpenPool(max_global=4, max_per_source=2,
+                            max_cache_bytes=4 * 128, ttl_ms=500)
+        gate = Barrier(16)
+        guard = Lock()
+
+        def admission(index):
+            gate.wait()
+            with guard:
+                return pool.admit(f"attempt-{index}", f"192.0.2.{index + 1}",
+                                  128, 0)
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            results = list(executor.map(admission, range(16)))
+        self.assertEqual(sum(results), 4)
+        self.assertEqual(len(pool.entries), 4)
+        self.assertEqual(sum(v[1] for v in pool.entries.values()), 512)
+
+    def test_concurrent_amplification_spending_is_accounted_once(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier, Lock
+
+        budget = AmplificationBudget(received=156)
+        gate = Barrier(16)
+        guard = Lock()
+
+        def send(_):
+            gate.wait()
+            with guard:
+                return budget.try_send(108)
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            results = list(executor.map(send, range(16)))
+        self.assertEqual(sum(results), 4)
+        self.assertEqual(budget.sent, 432)
+        self.assertLessEqual(budget.sent, 3 * budget.received)
+
 if __name__ == "__main__":
     unittest.main()
