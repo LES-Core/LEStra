@@ -47,7 +47,7 @@ class ServerHandshake:
             self.source = source
             self.initial_digest = fingerprint
             self.state = "HANDSHAKE_SENT"
-        elif self.state not in ("HANDSHAKE_SENT", "ESTABLISHED"):
+        elif self.state != "HANDSHAKE_SENT":
             return None
         elif source != self.source or fingerprint != self.initial_digest:
             return None
@@ -85,6 +85,14 @@ class HandshakeStateTests(unittest.TestCase):
     OTHER = "192.0.2.11:30000"
     INITIAL = b"I" * 156
     CONFIRM = b"C" * 42
+
+    def test_old_initial_does_not_trigger_handshake_after_establishment(self):
+        server = ServerHandshake()
+        server.on_initial(self.SOURCE, self.INITIAL, True)
+        self.assertEqual(server.on_confirm(self.SOURCE, self.CONFIRM, True), b"R" * 42)
+        before = server.budget.sent
+        self.assertIsNone(server.on_initial(self.SOURCE, self.INITIAL, True))
+        self.assertEqual(server.budget.sent, before)
 
     def test_lost_handshake_reuses_identical_response(self):
         server = ServerHandshake()
