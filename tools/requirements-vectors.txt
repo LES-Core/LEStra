@@ -1,2 +1,2 @@
 # Reference-vector generator only. Not a production LEStra dependency.
-cryptography==46.0.4
+cryptography==50.0.0
