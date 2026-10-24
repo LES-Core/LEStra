@@ -138,9 +138,7 @@ fn validate(header: PacketHeader, body_len: usize) -> Result<(), CodecError> {
             if zero_cid {
                 return Err(CodecError::InvalidConnectionId);
             }
-            if header.packet_number == 0
-                || header.packet_number >= MAX_PACKET_NUMBER_EXCLUSIVE
-            {
+            if header.packet_number == 0 || header.packet_number >= MAX_PACKET_NUMBER_EXCLUSIVE {
                 return Err(CodecError::InvalidPacketNumber);
             }
             if (header.kind == PacketType::Data && body_len < AEAD_TAG_LEN)
@@ -179,9 +177,8 @@ pub fn decode_packet(bytes: &[u8]) -> Result<DecodedPacket<'_>, CodecError> {
         return Err(CodecError::LengthMismatch);
     }
     let cid: [u8; 8] = bytes[8..16].try_into().expect("26-byte header checked");
-    let packet_number = u64::from_be_bytes(
-        bytes[16..24].try_into().expect("26-byte header checked"),
-    );
+    let packet_number =
+        u64::from_be_bytes(bytes[16..24].try_into().expect("26-byte header checked"));
     let header = PacketHeader {
         kind,
         destination_connection_id: cid,
