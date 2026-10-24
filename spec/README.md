@@ -1,19 +1,16 @@
 # LEStra Protocol Specifications
 
-The binary wire protocol is **not defined yet**. This directory holds normative, versioned specifications and interoperability vectors.
+Wire protocol documentation is independent from Rust crate semantic versions, the public SDK and any future C ABI.
 
-M0.2 defines security and architectural boundaries in [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) and [`../docs/THREAT_MODEL.md`](../docs/THREAT_MODEL.md). These documents are **drafts**, not normative message formats.
+- [`v1/README.md`](v1/README.md): **M0.3 revision 3 candidate** framing, authentication, routing, datagrams and lifecycle.
+- [`v1/HANDSHAKE.md`](v1/HANDSHAKE.md): exact Noise IK message composition, client/server CIDs, CONFIRM/READY and cached retransmission policy.
+- [`v1/TEST_PLAN.md`](v1/TEST_PLAN.md): fixtures, negative tests and review gates.
+- [`v1/vectors/native_udp_ik.json`](v1/vectors/native_udp_ik.json): deterministic **test-only** reference fixtures with exposed private test keys (never production secrets).
+- [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md): SDK and transport boundaries.
+- [`../docs/THREAT_MODEL.md`](../docs/THREAT_MODEL.md): baseline security objectives.
 
-The M0.3 specification must cover:
+Tools: `tools/generate_vectors.py`, `tools/test_vectors.py`, and pinned `tools/requirements-vectors.txt`.
 
-1. Protocol version, packet types, length limits, byte order and extension rules.
-2. Identity provisioning, authentication and negotiated capabilities.
-3. Handshake transcript, peer/key verification and DoS controls.
-4. AEAD authenticated data, counters, nonces, epochs, replay acceptance and rekey.
-5. Datagram delivery semantics, PMTU and error handling.
-6. Interoperability vectors and adversarial negative tests.
-7. Profile-specific security for native UDP, with later independent QUIC/TLS profiles.
+**This is a review draft, not an approved or independently audited protocol.** Keep `PROTOCOL_MAJOR_VERSION=0` in source until all M0.3 review gates close.
 
-**Normative keywords** MUST, MUST NOT, SHOULD, MAY will have RFC 2119 / RFC 8174 meaning when introduced in a versioned specification.
-
-No encryption, secure handshake, or VPN forwarding has been implemented yet.
+- [`v1/REVIEW_FINDINGS.md`](v1/REVIEW_FINDINGS.md): consistency review, closed test-level issues, deployment/security gates and merge policy.

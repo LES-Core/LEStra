@@ -1,0 +1,64 @@
+name: Protocol vectors
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'spec/v1/**'
+      - 'tools/generate_vectors.py'
+      - 'tools/test_vectors.py'
+      - 'tools/test_handshake_state.py'
+      - 'tools/requirements-vectors.txt'
+      - 'tools/protocol-vectors-rust/**'
+      - '.github/workflows/protocol-vectors.yml'
+  push:
+    branches:
+      - main
+      - 'docs/wire-protocol-*'
+    paths:
+      - 'spec/v1/**'
+      - 'tools/generate_vectors.py'
+      - 'tools/test_vectors.py'
+      - 'tools/test_handshake_state.py'
+      - 'tools/requirements-vectors.txt'
+      - 'tools/protocol-vectors-rust/**'
+      - '.github/workflows/protocol-vectors.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: protocol-vectors-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-reference:
+    name: Python vectors and handshake state model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: tools/requirements-vectors.txt
+      - run: python -m pip install -r tools/requirements-vectors.txt
+      - run: python tools/generate_vectors.py --check
+      - run: python tools/test_vectors.py -v
+      - run: python tools/test_handshake_state.py -v
+      - run: python tools/test_handshake_network.py -v
+
+  rust-independent:
+    name: Rust independent Noise verifier
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/protocol-vectors-rust
+      - name: Compare Noise and AEAD fixtures using Rust
+        run: cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml

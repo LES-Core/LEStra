@@ -1,0 +1,82 @@
+{
+  "warning": "TEST ONLY: deterministic public private keys, NOT suitable for production",
+  "status": "M0.3 proposed encoding; independent verification REQUIRED",
+  "noise_name": "Noise_IK_25519_ChaChaPoly_SHA256",
+  "prologue_hex": "4c45537472612f6e61746976652d7564702f7631",
+  "udp_payload_limit": 1200,
+  "static_test_keys": {
+    "client_private_hex": "bc8fbf528e673987b881a08335a599f1e77722bad832e04d210e4452e7941c91",
+    "client_public_hex": "ba29e6d9d5da49a68e55f3f76ba28fd848ace18eb223910ebef1745850d40435",
+    "server_private_hex": "4d5593c681621c3cdd67e108d0c8b7e5124d32d42b41810f741b861f714dfbc5",
+    "server_public_hex": "4bbce356eaf04dad6419693c20c6b145acfd5e4ae29b487545ad6b0a1cfacf33"
+  },
+  "ephemeral_test_keys": {
+    "client_private_hex": "63704e4cfcc6da3a0abb25dd72f858b5dec113bb3db614c1a84f5f49cc607340",
+    "client_public_hex": "f7da42cbc85bb45e8a53bbe887f81032b65a151d41a22b98e94f689a8c67c405",
+    "server_private_hex": "7ec845a277a4b14c8bb81234fcd26e78986f8a19d726acefa02d210c51e6dd65",
+    "server_public_hex": "f42df865e847236c6c5a469deeac362142f1ca7a3fef45c87a43db4801561f07"
+  },
+  "cids": {
+    "client_hex": "1122334455667788",
+    "server_hex": "a1a2a3a4a5a6a7a8"
+  },
+  "handshake": {
+    "initial": {
+      "header_hex": "4c53545201010000000000000000000000000000000000000082",
+      "noise_message_hex": "f7da42cbc85bb45e8a53bbe887f81032b65a151d41a22b98e94f689a8c67c405a8896f3ce2d6f0b0bf198a332eb5c1a9b929f57979c264599fb279c2a5326c2718fb02cf7b0ca9f4b3fdaf69ddaaf64983cc7817d648c70b9202a63c6584389ca94e7d94cfd9f23c50e5305b1b230f0084b026d64c432113fb58917a0b80cab9a04f",
+      "packet_hex": "4c53545201010000000000000000000000000000000000000082f7da42cbc85bb45e8a53bbe887f81032b65a151d41a22b98e94f689a8c67c405a8896f3ce2d6f0b0bf198a332eb5c1a9b929f57979c264599fb279c2a5326c2718fb02cf7b0ca9f4b3fdaf69ddaaf64983cc7817d648c70b9202a63c6584389ca94e7d94cfd9f23c50e5305b1b230f0084b026d64c432113fb58917a0b80cab9a04f",
+      "encrypted_payload_hex": "83cc7817d648c70b9202a63c6584389ca94e7d94cfd9f23c50e5305b1b230f0084b026d64c432113fb58917a0b80cab9a04f"
+    },
+    "response": {
+      "header_hex": "4c53545201020000112233445566778800000000000000000052",
+      "noise_message_hex": "f42df865e847236c6c5a469deeac362142f1ca7a3fef45c87a43db4801561f071269d5fe9a69f812cadb6e1c73424e8d768441f13f63ef949d2b033e4b9f2ff73fa937e8749273fc8338dd246f352b89ed44",
+      "packet_hex": "4c53545201020000112233445566778800000000000000000052f42df865e847236c6c5a469deeac362142f1ca7a3fef45c87a43db4801561f071269d5fe9a69f812cadb6e1c73424e8d768441f13f63ef949d2b033e4b9f2ff73fa937e8749273fc8338dd246f352b89ed44",
+      "encrypted_payload_hex": "1269d5fe9a69f812cadb6e1c73424e8d768441f13f63ef949d2b033e4b9f2ff73fa937e8749273fc8338dd246f352b89ed44"
+    },
+    "handshake_hash_hex": "04cc306ba1f2a6f0310f5911e7b66092b7aadb55e6245eb231da9ada28abf9a7",
+    "client_to_server_key_hex": "7fb260ee6039900d6eed24eccbf21679cf902cc185e235b5b80877e452c1c825",
+    "server_to_client_key_hex": "792eea3906e9f874ef0e580859631736a02246f2825bec2d78dc7d9af2bdf1e7"
+  },
+  "protected_packets": [
+    {
+      "type": "CONFIRM",
+      "packet_number": 0,
+      "header_hex": "4c53545201030000a1a2a3a4a5a6a7a800000000000000000010",
+      "plaintext_hex": "",
+      "ciphertext_hex": "51cade64a9bb8474795257424a949755",
+      "packet_hex": "4c53545201030000a1a2a3a4a5a6a7a80000000000000000001051cade64a9bb8474795257424a949755"
+    },
+    {
+      "type": "READY",
+      "packet_number": 0,
+      "header_hex": "4c53545201060000112233445566778800000000000000000010",
+      "plaintext_hex": "",
+      "ciphertext_hex": "1286e42674c5e2e03783c8a595106339",
+      "packet_hex": "4c535452010600001122334455667788000000000000000000101286e42674c5e2e03783c8a595106339"
+    },
+    {
+      "type": "DATA",
+      "packet_number": 1,
+      "header_hex": "4c53545201040000a1a2a3a4a5a6a7a80000000000000001002a",
+      "plaintext_hex": "4c455374726120766563746f722074657374207061796c6f6164",
+      "ciphertext_hex": "b6fc9380b76367f29296f5da5224c083f7f3e673d04ad5c782475b2137874187897d6d215a157e6fe8ad",
+      "packet_hex": "4c53545201040000a1a2a3a4a5a6a7a80000000000000001002ab6fc9380b76367f29296f5da5224c083f7f3e673d04ad5c782475b2137874187897d6d215a157e6fe8ad"
+    },
+    {
+      "type": "DATA",
+      "packet_number": 1,
+      "header_hex": "4c5354520104000011223344556677880000000000000001001c",
+      "plaintext_hex": "4c4553747261207265706c79",
+      "ciphertext_hex": "dfa0f767403ef161412604b26903a49328b942b8ccce81464abd527e",
+      "packet_hex": "4c5354520104000011223344556677880000000000000001001cdfa0f767403ef161412604b26903a49328b942b8ccce81464abd527e"
+    },
+    {
+      "type": "CLOSE",
+      "packet_number": 2,
+      "header_hex": "4c53545201050000a1a2a3a4a5a6a7a800000000000000020010",
+      "plaintext_hex": "",
+      "ciphertext_hex": "65ed872a19340c6f2cc75374e766bcec",
+      "packet_hex": "4c53545201050000a1a2a3a4a5a6a7a80000000000000002001065ed872a19340c6f2cc75374e766bcec"
+    }
+  ]
+}
