@@ -80,6 +80,37 @@ class ServerHandshake:
         return True
 
 
+@dataclass
+class HalfOpenPool:
+    """Bounded reference allocation model; no concurrency or cryptography."""
+
+    max_global: int
+    max_per_source: int
+    max_cache_bytes: int
+    ttl_ms: int
+    entries: dict[str, tuple[str, int, int]] = field(default_factory=dict)
+
+    def expire(self, now_ms: int) -> None:
+        for attempt_id, (_, _, deadline) in list(self.entries.items()):
+            if now_ms >= deadline:
+                del self.entries[attempt_id]
+
+    def admit(self, attempt_id: str, source: str, cache_bytes: int, now_ms: int) -> bool:
+        if cache_bytes <= 0 or self.ttl_ms <= 0:
+            return False
+        self.expire(now_ms)
+        if attempt_id in self.entries:
+            return False  # no CID/attempt overwrite
+        if len(self.entries) >= self.max_global:
+            return False
+        if sum(item[0] == source for item in self.entries.values()) >= self.max_per_source:
+            return False
+        if sum(item[1] for item in self.entries.values()) + cache_bytes > self.max_cache_bytes:
+            return False
+        self.entries[attempt_id] = (source, cache_bytes, now_ms + self.ttl_ms)
+        return True
+
+
 class HandshakeStateTests(unittest.TestCase):
     SOURCE = "192.0.2.10:30000"
     OTHER = "192.0.2.11:30000"
@@ -158,6 +189,38 @@ class HandshakeStateTests(unittest.TestCase):
         self.assertFalse(server.deliver_data(self.OTHER, True))
         self.assertFalse(server.deliver_data(self.SOURCE, False))
         self.assertEqual(server.application_deliveries, 1)
+
+
+
+class ResourceLimitsTests(unittest.TestCase):
+    def test_global_and_per_source_caps(self):
+        pool = HalfOpenPool(max_global=2, max_per_source=1, max_cache_bytes=1000, ttl_ms=500)
+        self.assertTrue(pool.admit("a", "192.0.2.1", 400, 0))
+        self.assertFalse(pool.admit("b", "192.0.2.1", 100, 0))
+        self.assertTrue(pool.admit("b", "192.0.2.2", 400, 0))
+        self.assertFalse(pool.admit("c", "192.0.2.3", 100, 0))
+        self.assertEqual(len(pool.entries), 2)
+
+    def test_cache_byte_cap_and_exact_boundary(self):
+        pool = HalfOpenPool(max_global=3, max_per_source=3, max_cache_bytes=500, ttl_ms=500)
+        self.assertTrue(pool.admit("a", "192.0.2.1", 450, 0))
+        self.assertFalse(pool.admit("b", "192.0.2.1", 51, 0))
+        self.assertTrue(pool.admit("b", "192.0.2.1", 50, 0))
+        self.assertFalse(pool.admit("c", "192.0.2.2", 1, 0))
+
+    def test_expiry_frees_capacity_without_reviving_old_attempt(self):
+        pool = HalfOpenPool(max_global=1, max_per_source=1, max_cache_bytes=500, ttl_ms=100)
+        self.assertTrue(pool.admit("old", "192.0.2.1", 300, 0))
+        self.assertFalse(pool.admit("new", "192.0.2.2", 300, 99))
+        pool.expire(100)
+        self.assertNotIn("old", pool.entries)
+        self.assertTrue(pool.admit("new", "192.0.2.2", 300, 100))
+
+    def test_duplicate_attempt_cannot_overwrite_source_binding(self):
+        pool = HalfOpenPool(max_global=3, max_per_source=3, max_cache_bytes=500, ttl_ms=500)
+        self.assertTrue(pool.admit("cid-1", "192.0.2.1", 100, 0))
+        self.assertFalse(pool.admit("cid-1", "192.0.2.2", 100, 1))
+        self.assertEqual(pool.entries["cid-1"], ("192.0.2.1", 100, 500))
 
 
 if __name__ == "__main__":
