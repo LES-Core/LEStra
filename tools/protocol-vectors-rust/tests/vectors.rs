@@ -62,7 +62,7 @@ fn noise_ik_transcript_matches_reference() -> TestResult {
     let len1 = initiator.write_message(&first_payload, &mut out)?;
     assert_eq!(len1, 130);
     assert_eq!(&out[..len1], hex_field(&hs["initial"], "noise_message_hex"));
-    assert_eq!([&first_payload[..], &out[..0]].concat().len(), 34);
+    assert_eq!(first_payload.len(), 34);
     let mut received = [0_u8; 128];
     let count1 = responder.read_message(&out[..len1], &mut received)?;
     assert_eq!(&received[..count1], first_payload);
@@ -118,8 +118,8 @@ fn protected_packets_authenticate_entire_header() -> TestResult {
         assert!(full.len() <= MAX_UDP);
         assert_eq!(ciphertext.len(), plaintext.len() + 16);
 
-        let to_server = header[8..16] == cid_server;
-        let to_client = header[8..16] == cid_client;
+        let to_server = &header[8..16] == cid_server.as_slice();
+        let to_client = &header[8..16] == cid_client.as_slice();
         assert!(to_server ^ to_client);
         match kind {
             "CONFIRM" => assert_eq!((header[5], pn, to_server), (3, 0, true)),
@@ -129,7 +129,8 @@ fn protected_packets_authenticate_entire_header() -> TestResult {
             _ => panic!("unexpected protected fixture type"),
         }
 
-        let cipher = ChaCha20Poly1305::new_from_slice(if to_server { &key_c2s } else { &key_s2c })?;
+        let cipher = ChaCha20Poly1305::new_from_slice(if to_server { &key_c2s } else { &key_s2c })
+            .expect("fixture keys are 32 bytes");
         let nonce_bytes = nonce(pn);
         let produced = cipher.encrypt(
             Nonce::from_slice(&nonce_bytes),
