@@ -50,6 +50,7 @@ This Python reference is deliberately written for determinism and fixture genera
 
 - [`RUST_VERIFICATION.md`](RUST_VERIFICATION.md) documents the isolated `snow`/RustCrypto verifier at `tools/protocol-vectors-rust`. Its test run is **not yet independently confirmed** by maintainers; passing CI is a prerequisite.
 - [`STATE_MACHINE.md`](STATE_MACHINE.md) describes explicit client/server transitions and byte-budget invariants.
+- [`REPLAY_AND_LIMITS.md`](REPLAY_AND_LIMITS.md) specifies packet-number acceptance, non-mutating replay prechecks, after-AEAD commits, and candidate resource bounds. Rust reference cases live in `tools/protocol-vectors-rust/tests/replay.rs`.
 - `tools/test_handshake_state.py` provides **model-only** tests (mock authentication, not Noise) for retransmission, replay/ACL gates and amplification; run with `python tools/test_handshake_state.py -v`.
 - [`.github/workflows/protocol-vectors.yml`](../../.github/workflows/protocol-vectors.yml) executes Python fixtures/model tests and Rust validation for relevant changes, including the M0.3 documentation branch.
 
