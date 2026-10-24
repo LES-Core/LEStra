@@ -1,0 +1,16 @@
+[package]
+name = "lestra-crypto"
+description = "Experimental, transport-independent Noise IK handshake for LEStra"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lestra-codec = { path = "../lestra-codec", version = "0.1.0" }
+snow = "=0.10.0"
