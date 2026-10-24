@@ -1,6 +1,6 @@
 # LEStra v1 — M0.3 verification plan (revision 3)
 
-**Status:** Deterministic *candidate* reference vectors generated and locally tested. No independent Rust/Noise verification, security audit or network stress test has been completed.
+**Status:** Candidate deterministic reference vectors, standalone Rust/Noise verifier, and replay/handshake reference models are present. Successful automated checks are not an independent security audit; concurrent/network stress testing and security review remain open.
 
 ## Local generator and smoke tests
 
@@ -48,10 +48,10 @@ This Python reference is deliberately written for determinism and fixture genera
 
 ## Independent verification implementation
 
-- [`RUST_VERIFICATION.md`](RUST_VERIFICATION.md) documents the isolated `snow`/RustCrypto verifier at `tools/protocol-vectors-rust`. Its test run is **not yet independently confirmed** by maintainers; passing CI is a prerequisite.
+- [`RUST_VERIFICATION.md`](RUST_VERIFICATION.md) documents the isolated `snow`/RustCrypto verifier at `tools/protocol-vectors-rust`. Each revision must pass its GitHub CI tests; tests do not constitute an independent security assessment.
 - [`STATE_MACHINE.md`](STATE_MACHINE.md) describes explicit client/server transitions and byte-budget invariants.
 - [`REPLAY_AND_LIMITS.md`](REPLAY_AND_LIMITS.md) specifies packet-number acceptance, non-mutating replay prechecks, after-AEAD commits, and candidate resource bounds. Rust reference cases live in `tools/protocol-vectors-rust/tests/replay.rs`.
-- `tools/test_handshake_state.py` provides **model-only** tests (mock authentication, not Noise) for retransmission, replay/ACL gates and amplification; run with `python tools/test_handshake_state.py -v`.
+- `tools/test_handshake_state.py` provides **model-only** tests (mock authentication, not Noise) for retransmission, replay/ACL gates, amplification and half-open session/cache quotas; run with `python tools/test_handshake_state.py -v`.
 - [`.github/workflows/protocol-vectors.yml`](../../.github/workflows/protocol-vectors.yml) executes Python fixtures/model tests and Rust validation for relevant changes, including the M0.3 documentation branch.
 
 Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining security review gates are formally closed.
