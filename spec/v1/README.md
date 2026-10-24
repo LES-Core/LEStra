@@ -82,6 +82,7 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 - [REPLAY_AND_LIMITS.md](REPLAY_AND_LIMITS.md) defines the bounded receive window, nonce-counter exhaustion, and candidate server resource ceilings.
 - [CONCURRENCY_REVIEW.md](CONCURRENCY_REVIEW.md) tracks atomic replay commits, half-open quotas, and amplification-budget synchronization.
 - [NETWORK_FAULTS.md](NETWORK_FAULTS.md) tracks bounded retransmission and virtual-time loss/overload verification.
+- [UDP_LOOPBACK.md](UDP_LOOPBACK.md) documents test-only real UDP socket exchange with Noise IK and AEAD verification.
 - [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes independent test-only Rust Noise/AEAD fixture checks (pending CI verification).
 - [vectors/native_udp_ik.json](vectors/native_udp_ik.json) contains **test-only deterministic candidate vectors** generated from [../../tools/generate_vectors.py](../../tools/generate_vectors.py) (relative path: `tools/` at repository root). All private keys in vectors are **public test values**, NEVER production identities.
 

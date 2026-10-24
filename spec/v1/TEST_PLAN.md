@@ -62,3 +62,9 @@ Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining 
 - [NETWORK_FAULTS.md](NETWORK_FAULTS.md) documents deterministic packet-loss, timeout, duplicate, delayed READY and admission-burst model tests.
 - Run `python tools/test_handshake_network.py -v` in CI alongside the existing Python and Rust fixture verifiers.
 - Simulation does not replace real UDP socket tests or satisfy the independent security-review gate.
+
+## OS UDP loopback integration (fixture profile only)
+
+- `tools/protocol-vectors-rust/tests/udp_loopback.rs` exchanges real packets over two local OS UDP sockets, authenticates the actual Noise IK handshake with `snow`, validates CONFIRM/READY and bidirectional DATA with independent AEAD/AAD, and rejects invalid framing, wrong source tuple, tampered tags and duplicate DATA.
+- Read timeouts are tested without opening a session. These tests use **public deterministic test keys**. They do **not** exercise real server load, production session management, TUN, pacing or VPN routing.
+- Run `cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml --test udp_loopback` (also included by the protocol-vector CI).
