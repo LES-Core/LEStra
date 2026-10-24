@@ -45,3 +45,12 @@ This Python reference is deliberately written for determinism and fixture genera
 - Documentation and fixture generation can be reviewed as **M0.3 draft**.
 - **Do not approve the wire format for stable v1 or merge a crypto implementation** until an independent verifier reproduces the reference results and a reviewer signs off nonce/AAD, replay logic and handshake state machine.
 - Rust constant `PROTOCOL_MAJOR_VERSION` remains `0` until wire freeze.
+
+## Independent verification implementation
+
+- [`RUST_VERIFICATION.md`](RUST_VERIFICATION.md) documents the isolated `snow`/RustCrypto verifier at `tools/protocol-vectors-rust`. Its test run is **not yet independently confirmed** by maintainers; passing CI is a prerequisite.
+- [`STATE_MACHINE.md`](STATE_MACHINE.md) describes explicit client/server transitions and byte-budget invariants.
+- `tools/test_handshake_state.py` provides **model-only** tests (mock authentication, not Noise) for retransmission, replay/ACL gates and amplification; run with `python tools/test_handshake_state.py -v`.
+- [`.github/workflows/protocol-vectors.yml`](../../.github/workflows/protocol-vectors.yml) executes Python fixtures/model tests and Rust validation for relevant changes, including the M0.3 documentation branch.
+
+Do not mark M0.3 wire freeze complete until Rust vector jobs pass and remaining security review gates are formally closed.
