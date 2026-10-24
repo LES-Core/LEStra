@@ -79,6 +79,7 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 - [HANDSHAKE.md](HANDSHAKE.md) defines handshake and retry policy.
 - [TEST_PLAN.md](TEST_PLAN.md) describes required testing and acceptance criteria.
 - [STATE_MACHINE.md](STATE_MACHINE.md) defines handshake transitions, replay-cache and anti-amplification rules.
+- [REPLAY_AND_LIMITS.md](REPLAY_AND_LIMITS.md) defines the bounded receive window, nonce-counter exhaustion, and candidate server resource ceilings.
 - [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes independent test-only Rust Noise/AEAD fixture checks (pending CI verification).
 - [vectors/native_udp_ik.json](vectors/native_udp_ik.json) contains **test-only deterministic candidate vectors** generated from [../../tools/generate_vectors.py](../../tools/generate_vectors.py) (relative path: `tools/` at repository root). All private keys in vectors are **public test values**, NEVER production identities.
 
