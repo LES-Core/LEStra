@@ -19,6 +19,7 @@ The standalone crate deliberately uses its own `[workspace]` and is not a depend
 - Handshake hash agreement and exact initiator-to-responder / responder-to-initiator raw Split keys.
 - Each protected CONFIRM, READY, DATA and CLOSE ciphertext and tag with the **entire 26-byte header** as AEAD Additional Authenticated Data.
 - Failure after altering the authenticated header, ciphertext/tag or pinned server identity.
+- The `tests/replay.rs` reference model verifies 1024-number sliding replay semantics, in-order and reordered packets, limits at 2^32, per-direction separation, and AEAD rejection without replay-window mutation. This is not a concurrency-safe production replay implementation.
 
 `fixed_ephemeral_key_for_testing_only` and the `risky-raw-split` feature are **strictly for verification**. They must not become production public SDK APIs. Published JSON includes intentionally disclosed private keys; never use those identities for real peers.
 
