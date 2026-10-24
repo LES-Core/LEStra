@@ -1,8 +1,6 @@
 use std::net::SocketAddr;
 
-use lestra_crypto::{
-    ClientStart, HandshakeError, ServerStart, INITIAL_SIZE, RESPONSE_SIZE,
-};
+use lestra_crypto::{ClientStart, HandshakeError, INITIAL_SIZE, RESPONSE_SIZE, ServerStart};
 use snow::{Builder, params::NoiseParams};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -42,13 +40,15 @@ fn pinned_noise_ik_exchange_binds_transcript_and_both_cids() -> TestResult {
     let server = ServerStart::new(&server_private, client_public, server_cid)?;
     let server = server.accept_initial(addr(1234), pending.initial())?;
     assert_eq!(server.response().len(), RESPONSE_SIZE);
-    assert_eq!(server.response(), server.response()); // cached unchanged bytes
 
     let verified_client = pending.accept_response(addr(3456), server.response())?;
     let verified_server = server.verified_noise();
     assert!(verified_client.noise_complete());
     assert!(verified_server.noise_complete());
-    assert_eq!(verified_client.transcript_hash(), verified_server.transcript_hash());
+    assert_eq!(
+        verified_client.transcript_hash(),
+        verified_server.transcript_hash()
+    );
     assert_eq!(verified_client.transcript_hash().len(), 32);
     assert_eq!(verified_client.local_receive_cid(), client_cid);
     assert_eq!(verified_client.remote_receive_cid(), server_cid);

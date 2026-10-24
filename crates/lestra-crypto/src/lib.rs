@@ -71,7 +71,9 @@ impl From<snow::Error> for HandshakeError {
 }
 
 fn params() -> NoiseParams {
-    PATTERN.parse().expect("constant Noise IK suite must be valid")
+    PATTERN
+        .parse()
+        .expect("constant Noise IK suite must be valid")
 }
 
 fn valid_cid(cid: [u8; 8]) -> Result<(), HandshakeError> {
@@ -310,7 +312,9 @@ impl ServerStart {
         response_plaintext[26..].copy_from_slice(&self.server_receive_cid);
 
         let mut message = [0_u8; RESPONSE_BODY_SIZE];
-        let written = self.noise.write_message(&response_plaintext, &mut message)?;
+        let written = self
+            .noise
+            .write_message(&response_plaintext, &mut message)?;
         if written != RESPONSE_BODY_SIZE || !self.noise.is_handshake_finished() {
             return Err(HandshakeError::IncompleteNoiseHandshake);
         }
