@@ -1,16 +1,10 @@
 name: Protocol vectors
 
 on:
+  # Always emit stable status checks for PRs, including dependency-only PRs.
+  # Workflow-level PR path filters make required checks disappear/pending.
   pull_request:
     branches: [main]
-    paths:
-      - 'spec/v1/**'
-      - 'tools/generate_vectors.py'
-      - 'tools/test_vectors.py'
-      - 'tools/test_handshake_state.py'
-      - 'tools/requirements-vectors.txt'
-      - 'tools/protocol-vectors-rust/**'
-      - '.github/workflows/protocol-vectors.yml'
   push:
     branches:
       - main
@@ -20,6 +14,7 @@ on:
       - 'tools/generate_vectors.py'
       - 'tools/test_vectors.py'
       - 'tools/test_handshake_state.py'
+      - 'tools/test_handshake_network.py'
       - 'tools/requirements-vectors.txt'
       - 'tools/protocol-vectors-rust/**'
       - '.github/workflows/protocol-vectors.yml'
@@ -62,3 +57,24 @@ jobs:
           workspaces: tools/protocol-vectors-rust
       - name: Compare Noise and AEAD fixtures using Rust
         run: cargo test --manifest-path tools/protocol-vectors-rust/Cargo.toml
+
+  # One stable status context to configure in the main ruleset.
+  # A green general Rust CI status alone does not validate Python fixtures.
+  required:
+    name: lestra-protocol-vectors-required
+    needs: [python-reference, rust-independent]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require successful Python and independent Rust verification
+        shell: bash
+        env:
+          PYTHON_RESULT: ${{ needs.python-reference.result }}
+          RUST_RESULT: ${{ needs.rust-independent.result }}
+        run: |
+          if [[ "$PYTHON_RESULT" != "success" || "$RUST_RESULT" != "success" ]]; then
+            echo "Protocol vector gate failed: python=$PYTHON_RESULT rust=$RUST_RESULT"
+            exit 1
+          fi
+          echo "Python and independent Rust protocol checks both passed."
