@@ -1,22 +1,29 @@
-//! Experimental Noise IK handshake for LEStra native UDP.
+//! Experimental Noise IK and packet protection for LEStra native UDP.
 //!
-//! Completes the two Noise IK messages and verifies peer identity, endpoint,
-//! CIDs and authenticated header echoes. This crate **does not** implement
-//! CONFIRM/READY, protected DATA, replay handling, retransmissions or key
-//! export. A completed Noise handshake is NOT an established LEStra session.
+//! Implements authenticated Noise IK handshakes and initiator CONFIRM
+//! packet protection with explicit header associated data.
 //!
-//! We intentionally DO NOT enable snow's "risky-raw-split" feature or use its
-//! transport convenience methods: those do not provide LEStra's mandatory
-//! full-header AEAD associated data contract.
+//! A completed Noise handshake is NOT an established LEStra session.
+//! READY verification, replay protection, application data delivery,
+//! retransmission scheduling and resource limits remain unimplemented.
 //!
-//! A higher layer must perform cheap parsing, rate limiting, ACL lookup,
-//! bounded pending-session admission, source binding and 3:1 accounting.
+//! Traffic keys remain inside Snow's directional cipher states.
+//! Raw Split key export is intentionally disabled.
+//!
+//! This crate is experimental and has not been independently audited.
+
+mod aead;
+
+pub use aead::PacketProtectionError;
+
+use aead::PacketProtection;
 
 use core::fmt;
 use std::net::SocketAddr;
 
 use lestra_codec::{
-    CodecError, PacketHeader, PacketType, decode_packet, encode_header, encode_packet_into,
+    AEAD_TAG_LEN, CodecError, HEADER_LEN, PacketHeader, PacketType, decode_packet, encode_header,
+    encode_packet_into,
 };
 use snow::{Builder, HandshakeState, params::NoiseParams};
 
@@ -24,6 +31,7 @@ const PROLOGUE: &[u8] = b"LEStra/native-udp/v1";
 const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
 pub const INITIAL_SIZE: usize = 156;
 pub const RESPONSE_SIZE: usize = 108;
+pub const CONFIRM_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
 const INITIAL_BODY_SIZE: usize = 130;
 const RESPONSE_BODY_SIZE: usize = 82;
 const ECHO_SIZE: usize = 34;
@@ -137,6 +145,48 @@ impl VerifiedNoise {
 
     pub fn noise_complete(&self) -> bool {
         self.noise.is_handshake_finished()
+    }
+
+    /// Consume the verified initiator handshake and generate CONFIRM.
+    ///
+    /// This does not establish a LEStra session.
+    pub fn start_confirmation(self) -> Result<ClientAwaitingReady, PacketProtectionError> {
+        let mut protection = PacketProtection::from_verified(self)?;
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+
+        protection.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        Ok(ClientAwaitingReady {
+            protection,
+            confirm,
+        })
+    }
+}
+
+/// Client after generating CONFIRM but before authenticating READY.
+///
+/// Application data must not be sent or delivered in this state.
+pub struct ClientAwaitingReady {
+    protection: PacketProtection,
+    confirm: [u8; CONFIRM_SIZE],
+}
+
+impl ClientAwaitingReady {
+    /// Returns the immutable CONFIRM packet for transmission or retry.
+    pub fn confirm(&self) -> &[u8; CONFIRM_SIZE] {
+        &self.confirm
+    }
+
+    pub fn local_receive_cid(&self) -> [u8; 8] {
+        self.protection.local_receive_cid
+    }
+
+    pub fn remote_receive_cid(&self) -> [u8; 8] {
+        self.protection.remote_receive_cid
+    }
+
+    pub fn remote_endpoint(&self) -> SocketAddr {
+        self.protection.remote_endpoint
     }
 }
 
