@@ -129,7 +129,7 @@ impl PacketProtection {
         // Never roll this counter back.
         self.next_send += 1;
 
-        let written = match self.noise.write_message_with_ad(
+        let written = match self.noise.write_message_with_additional_data(
             packet_number,
             &raw_header,
             plaintext,
@@ -207,8 +207,12 @@ mod tests {
 
         let mut plaintext = [0_u8; 1];
 
-        let written =
-            receiver.read_message_with_ad(0, packet.raw_header, packet.body, &mut plaintext)?;
+        let written = receiver.read_message_with_additional_data(
+            0,
+            packet.raw_header,
+            packet.body,
+            &mut plaintext,
+        )?;
 
         assert_eq!(written, 0);
 
@@ -217,7 +221,7 @@ mod tests {
 
         assert!(
             receiver
-                .read_message_with_ad(0, &tampered_header, packet.body, &mut plaintext,)
+                .read_message_with_additional_data(0, &tampered_header, packet.body, &mut plaintext,)
                 .is_err()
         );
 

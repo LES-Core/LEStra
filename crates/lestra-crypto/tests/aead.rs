@@ -106,12 +106,17 @@ fn explicit_aad_matches_reference_vectors() -> TestResult {
             (&server, &client)
         };
 
-        let len = sender.write_message_with_ad(pn, &header, &plaintext, &mut encrypted)?;
+        let len =
+            sender.write_message_with_additional_data(pn, &header, &plaintext, &mut encrypted)?;
 
         assert_eq!(&encrypted[..len], expected.as_slice());
 
-        let decoded =
-            receiver.read_message_with_ad(pn, &header, &encrypted[..len], &mut decrypted)?;
+        let decoded = receiver.read_message_with_additional_data(
+            pn,
+            &header,
+            &encrypted[..len],
+            &mut decrypted,
+        )?;
 
         assert_eq!(&decrypted[..decoded], plaintext.as_slice());
 
@@ -122,7 +127,12 @@ fn explicit_aad_matches_reference_vectors() -> TestResult {
 
             assert!(
                 receiver
-                    .read_message_with_ad(pn, &tampered, &encrypted[..len], &mut decrypted,)
+                    .read_message_with_additional_data(
+                        pn,
+                        &tampered,
+                        &encrypted[..len],
+                        &mut decrypted,
+                    )
                     .is_err()
             );
         }
@@ -130,14 +140,19 @@ fn explicit_aad_matches_reference_vectors() -> TestResult {
         // Reject an incorrect nonce.
         assert!(
             receiver
-                .read_message_with_ad(pn ^ 1, &header, &encrypted[..len], &mut decrypted,)
+                .read_message_with_additional_data(
+                    pn ^ 1,
+                    &header,
+                    &encrypted[..len],
+                    &mut decrypted,
+                )
                 .is_err()
         );
 
         // Reject ciphertext encrypted in the opposite direction.
         assert!(
             sender
-                .read_message_with_ad(pn, &header, &encrypted[..len], &mut decrypted,)
+                .read_message_with_additional_data(pn, &header, &encrypted[..len], &mut decrypted,)
                 .is_err()
         );
 
@@ -147,7 +162,12 @@ fn explicit_aad_matches_reference_vectors() -> TestResult {
 
             assert!(
                 receiver
-                    .read_message_with_ad(pn, &header, &encrypted[..len], &mut decrypted,)
+                    .read_message_with_additional_data(
+                        pn,
+                        &header,
+                        &encrypted[..len],
+                        &mut decrypted,
+                    )
                     .is_err()
             );
 
@@ -159,7 +179,12 @@ fn explicit_aad_matches_reference_vectors() -> TestResult {
     let oversized = vec![0_u8; 65_536];
 
     assert!(matches!(
-        server.read_message_with_ad(0, &[0_u8; HEADER_LEN], &oversized, &mut decrypted,),
+        server.read_message_with_additional_data(
+            0,
+            &[0_u8; HEADER_LEN],
+            &oversized,
+            &mut decrypted,
+        ),
         Err(snow::Error::Input)
     ));
 

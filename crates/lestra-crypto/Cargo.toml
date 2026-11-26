@@ -13,7 +13,7 @@ workspace = true
 
 [dependencies]
 lestra-codec = { path = "../lestra-codec", version = "0.1.0" }
-snow = { git = "https://github.com/Folk-Git9/snow-fork.git", rev = "8e6166124a36023b275e03754211466aec347ab3", version = "=0.10.0" }
+snow = { git = "https://github.com/mcginty/snow.git", rev = "295dc7b9c123d2af35b411f824eb67a13359444e", version = "=0.10.0" }
 
 [dev-dependencies]
 serde_json = "1.0"
