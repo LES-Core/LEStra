@@ -87,6 +87,7 @@ Noise `Split()` supplies **two different CipherState keys**, ordered **initiator
 - [UDP_LOOPBACK.md](UDP_LOOPBACK.md) documents test-only real UDP socket exchange with Noise IK and AEAD verification.
 - [RUST_VERIFICATION.md](RUST_VERIFICATION.md) describes the test-only Rust Noise/AEAD verifier, whose fixture checks have passed CI; this is **not** an independent security audit.
 - [vectors/native_udp_ik.json](vectors/native_udp_ik.json) contains **test-only deterministic candidate vectors** generated from [../../tools/generate_vectors.py](../../tools/generate_vectors.py) (relative path: `tools/` at repository root). All private keys in vectors are **public test values**, NEVER production identities.
+- [CONGESTION_CONTROL.md](CONGESTION_CONTROL.md) proposes authenticated feedback, bounded sender history, loss detection and adaptive congestion control for a future experimental wire profile.
 
 **Blocking before wire freeze / production crypto:** independent security review of the Noise transcript, nonce/AAD, CID and retry-state handling, DoS and congestion limits, and deployment key provisioning/revocation. Rust/Noise fixture verification and candidate parser negative tests are implemented; they do not close these review gates. Until resolved, keep `PROTOCOL_MAJOR_VERSION=0` in Rust source, even though the draft header uses proposed `0x01`.
 
