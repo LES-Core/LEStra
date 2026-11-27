@@ -68,7 +68,7 @@ pub enum ConnectStatus {
 }
 
 enum ClientState {
-    Initial(ClientPending),
+    Initial(Box<ClientPending>),
     Confirm(ClientAwaitingReady),
     Established(EstablishedSession),
     Failed,
@@ -115,7 +115,7 @@ impl UdpClient {
             io,
             server,
             local_cid,
-            state: ClientState::Initial(pending),
+            state: ClientState::Initial(Box::new(pending)),
             retry: RetrySchedule::new(now, local_cid),
             deadline: now + HANDSHAKE_TIMEOUT,
         })
@@ -228,7 +228,7 @@ impl UdpClient {
                     unreachable!("initial handshake state");
                 };
 
-                let pending = pending
+                let pending = (*pending)
                     .accept_response(source, bytes)?
                     .start_confirmation()?;
 
@@ -293,7 +293,7 @@ mod tests {
 
     use lestra_codec::{MAX_DATAGRAM_LEN, decode_packet};
 
-    use lestra_crypto::{ClientStart, MAX_DATA_SIZE, ReceiveEvent, ServerStart};
+    use lestra_crypto::{MAX_DATA_SIZE, ReceiveEvent, ServerStart};
 
     use snow::{Builder, Keypair, params::NoiseParams};
 
