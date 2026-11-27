@@ -12,6 +12,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+lestra-core = { path = "../lestra-core", version = "0.1.0" }
 lestra-codec = { path = "../lestra-codec", version = "0.1.0" }
 snow = { git = "https://github.com/mcginty/snow.git", rev = "295dc7b9c123d2af35b411f824eb67a13359444e", version = "=0.10.0" }
 

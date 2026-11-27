@@ -3,8 +3,9 @@ use std::net::SocketAddr;
 
 use lestra_codec::{
     AEAD_TAG_LEN, CodecError, HEADER_LEN, MAX_DATAGRAM_LEN, MAX_PACKET_NUMBER_EXCLUSIVE,
-    PacketHeader, PacketType, encode_header,
+    PacketHeader, PacketType, decode_packet, encode_header,
 };
+use lestra_core::ReplayWindow;
 use snow::StatelessTransportState;
 
 use super::VerifiedNoise;
@@ -16,8 +17,11 @@ pub enum PacketProtectionError {
     Codec(CodecError),
     Noise(snow::Error),
     CounterExhausted,
+    ReplayRejected,
     UnexpectedPacket,
+    UnexpectedPeer,
     InvalidCiphertextLength,
+    InvalidConnectionId,
 }
 
 impl fmt::Display for PacketProtectionError {
@@ -26,7 +30,10 @@ impl fmt::Display for PacketProtectionError {
             Self::Codec(err) => write!(f, "invalid packet: {err}"),
             Self::Noise(_) => f.write_str("packet protection failed"),
             Self::CounterExhausted => f.write_str("send state exhausted; reconnect required"),
+            Self::ReplayRejected => f.write_str("duplicate or expired packet number"),
             Self::UnexpectedPacket => f.write_str("unexpected protected packet type"),
+            Self::UnexpectedPeer => f.write_str("unexpected remote endpoint"),
+            Self::InvalidConnectionId => f.write_str("unexpected destination connection ID"),
             Self::InvalidCiphertextLength => f.write_str("unexpected ciphertext length"),
         }
     }
@@ -54,6 +61,9 @@ pub(super) struct PacketProtection {
     noise: StatelessTransportState,
     next_send: u64,
 
+    #[allow(dead_code, reason = "RX state machine integration is pending")]
+    replay: ReplayWindow,
+
     pub(super) local_receive_cid: [u8; 8],
     pub(super) remote_receive_cid: [u8; 8],
     pub(super) remote_endpoint: SocketAddr,
@@ -64,6 +74,7 @@ impl PacketProtection {
         Ok(Self {
             noise: verified.noise.into_stateless_transport_mode()?,
             next_send: 0,
+            replay: ReplayWindow::new(),
             local_receive_cid: verified.local_receive_cid,
             remote_receive_cid: verified.remote_receive_cid,
             remote_endpoint: verified.remote_endpoint,
@@ -152,13 +163,94 @@ impl PacketProtection {
 
         Ok(required)
     }
+
+    /// Authenticate and decrypt a protected packet.
+    ///
+    /// The caller must enforce the session lifecycle and select the
+    /// expected packet type.
+    ///
+    /// Failed authentication never modifies the replay window.
+    /// Plaintext is exposed only after successful replay commit.
+    #[allow(dead_code, reason = "RX state machine integration is pending")]
+    pub(super) fn open(
+        &mut self,
+        source: SocketAddr,
+        expected: PacketType,
+        bytes: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, PacketProtectionError> {
+        let packet = decode_packet(bytes)?;
+
+        if source != self.remote_endpoint {
+            return Err(PacketProtectionError::UnexpectedPeer);
+        }
+
+        if packet.header.destination_connection_id != self.local_receive_cid {
+            return Err(PacketProtectionError::InvalidConnectionId);
+        }
+
+        if packet.header.kind != expected {
+            return Err(PacketProtectionError::UnexpectedPacket);
+        }
+
+        let allowed = match packet.header.kind {
+            PacketType::Confirm => !self.noise.is_initiator(),
+            PacketType::Ready => self.noise.is_initiator(),
+
+            PacketType::Data | PacketType::Close => self.replay.highest().is_some(),
+
+            PacketType::Initial | PacketType::Handshake => false,
+        };
+
+        if !allowed {
+            return Err(PacketProtectionError::UnexpectedPacket);
+        }
+
+        let packet_number = packet.header.packet_number;
+
+        if !self.replay.is_candidate(packet_number) {
+            return Err(PacketProtectionError::ReplayRejected);
+        }
+
+        // The codec guarantees the minimum protected body length.
+        let plaintext_len = packet.body.len() - AEAD_TAG_LEN;
+
+        if output.len() < plaintext_len {
+            return Err(CodecError::OutputTooSmall {
+                required: plaintext_len,
+                available: output.len(),
+            }
+            .into());
+        }
+
+        // Do not expose unauthenticated plaintext to the caller.
+        let mut scratch = [0_u8; MAX_PLAINTEXT_LEN];
+
+        let written = self.noise.read_message_with_additional_data(
+            packet_number,
+            packet.raw_header,
+            packet.body,
+            &mut scratch[..plaintext_len],
+        )?;
+
+        if written != plaintext_len {
+            return Err(PacketProtectionError::InvalidCiphertextLength);
+        }
+
+        if !self.replay.commit_authenticated(packet_number) {
+            return Err(PacketProtectionError::ReplayRejected);
+        }
+
+        output[..written].copy_from_slice(&scratch[..written]);
+
+        Ok(written)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{CONFIRM_SIZE, ClientStart, ServerStart};
-    use lestra_codec::decode_packet;
     use snow::{Builder, params::NoiseParams};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -377,6 +469,224 @@ mod tests {
         let packet = decode_packet(&output[..len])?;
 
         assert_eq!(packet.body.len(), MAX_PLAINTEXT_LEN + AEAD_TAG_LEN);
+
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_authenticates_and_rejects_replayed_confirm() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+        let mut packet = [0_u8; CONFIRM_SIZE];
+
+        let len = client.seal(PacketType::Confirm, &[], &mut packet)?;
+
+        let written = server.open(source, PacketType::Confirm, &packet[..len], &mut [])?;
+
+        assert_eq!(written, 0);
+        assert_eq!(server.replay.highest(), Some(0));
+
+        assert!(matches!(
+            server.open(source, PacketType::Confirm, &packet[..len], &mut [],),
+            Err(PacketProtectionError::ReplayRejected)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_rejects_unexpected_peer_cid_and_type() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+        let wrong_source = SocketAddr::from(([127, 0, 0, 1], 9999));
+
+        let mut packet = [0_u8; CONFIRM_SIZE];
+
+        client.seal(PacketType::Confirm, &[], &mut packet)?;
+
+        assert!(matches!(
+            server.open(wrong_source, PacketType::Confirm, &packet, &mut [],),
+            Err(PacketProtectionError::UnexpectedPeer)
+        ));
+
+        let mut wrong_cid = packet;
+        wrong_cid[8] ^= 1;
+
+        assert!(matches!(
+            server.open(source, PacketType::Confirm, &wrong_cid, &mut [],),
+            Err(PacketProtectionError::InvalidConnectionId)
+        ));
+
+        assert!(matches!(
+            server.open(source, PacketType::Ready, &packet, &mut [],),
+            Err(PacketProtectionError::UnexpectedPacket)
+        ));
+
+        assert_eq!(server.replay.highest(), None);
+
+        server.open(source, PacketType::Confirm, &packet, &mut [])?;
+
+        assert_eq!(server.replay.highest(), Some(0));
+
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_rejects_data_before_confirmation() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+        let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+        let mut output = [0_u8; 32];
+
+        client.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        let len = client.seal(PacketType::Data, b"early data", &mut packet)?;
+
+        assert!(matches!(
+            server.open(source, PacketType::Data, &packet[..len], &mut output,),
+            Err(PacketProtectionError::UnexpectedPacket)
+        ));
+
+        assert_eq!(server.replay.highest(), None);
+
+        Ok(())
+    }
+
+    #[test]
+    fn authentication_failure_does_not_advance_replay_window() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+        let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+
+        client.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        server.open(source, PacketType::Confirm, &confirm, &mut [])?;
+
+        let len = client.seal(PacketType::Data, b"LEStra", &mut packet)?;
+
+        let mut tampered = packet;
+
+        // Change the unauthenticated wire packet number.
+        let fake_number = MAX_PACKET_NUMBER_EXCLUSIVE - 1;
+
+        tampered[16..24].copy_from_slice(&fake_number.to_be_bytes());
+
+        let mut output = [0xAA_u8; 32];
+
+        assert!(matches!(
+            server.open(source, PacketType::Data, &tampered[..len], &mut output,),
+            Err(PacketProtectionError::Noise(_))
+        ));
+
+        assert_eq!(server.replay.highest(), Some(0));
+        assert_eq!(output, [0xAA_u8; 32]);
+
+        let written = server.open(source, PacketType::Data, &packet[..len], &mut output)?;
+
+        assert_eq!(&output[..written], b"LEStra");
+        assert_eq!(server.replay.highest(), Some(1));
+
+        Ok(())
+    }
+
+    #[test]
+    fn receiver_accepts_out_of_order_authenticated_data() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+
+        client.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        server.open(source, PacketType::Confirm, &confirm, &mut [])?;
+
+        let mut first = [0_u8; MAX_DATAGRAM_LEN];
+        let mut second = [0_u8; MAX_DATAGRAM_LEN];
+
+        let first_len = client.seal(PacketType::Data, b"first", &mut first)?;
+
+        let second_len = client.seal(PacketType::Data, b"second", &mut second)?;
+
+        let mut output = [0_u8; 32];
+
+        let written = server.open(source, PacketType::Data, &second[..second_len], &mut output)?;
+
+        assert_eq!(&output[..written], b"second");
+        assert_eq!(server.replay.highest(), Some(2));
+
+        let written = server.open(source, PacketType::Data, &first[..first_len], &mut output)?;
+
+        assert_eq!(&output[..written], b"first");
+        assert_eq!(server.replay.highest(), Some(2));
+
+        assert!(matches!(
+            server.open(source, PacketType::Data, &first[..first_len], &mut output,),
+            Err(PacketProtectionError::ReplayRejected)
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    fn insufficient_output_does_not_commit_packet_number() -> TestResult {
+        let (client, server) = verified_pair()?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+        let mut server = PacketProtection::from_verified(server)?;
+
+        let source = server.remote_endpoint;
+
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+
+        client.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        server.open(source, PacketType::Confirm, &confirm, &mut [])?;
+
+        let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+
+        let len = client.seal(PacketType::Data, b"LEStra", &mut packet)?;
+
+        let mut small = [0_u8; 2];
+
+        assert!(matches!(
+            server.open(source, PacketType::Data, &packet[..len], &mut small,),
+            Err(PacketProtectionError::Codec(
+                CodecError::OutputTooSmall { .. }
+            ))
+        ));
+
+        assert_eq!(server.replay.highest(), Some(0));
+
+        let mut output = [0_u8; 32];
+
+        let written = server.open(source, PacketType::Data, &packet[..len], &mut output)?;
+
+        assert_eq!(&output[..written], b"LEStra");
+        assert_eq!(server.replay.highest(), Some(1));
 
         Ok(())
     }
