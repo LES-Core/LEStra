@@ -23,10 +23,12 @@ pub use amplification::{AMPLIFICATION_FACTOR, AmplificationBudget};
 
 pub use client::{ConnectError, ConnectStatus, UdpClient};
 
-pub use config::ServerConfig;
+pub use config::{ServerConfig, SessionTimeouts};
 
 pub use server::{ServerEvent, UdpServer};
 
-pub use session_table::{ConnectionId, RouteEvent, SessionTable, SessionTableError};
+pub use session_table::{
+    ConnectionId, ExpirationReason, RouteEvent, SessionTable, SessionTableError,
+};
 
 pub use socket::{IncomingDatagram, UdpIo};

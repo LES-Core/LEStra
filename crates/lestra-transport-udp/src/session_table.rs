@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     fmt,
     net::{IpAddr, SocketAddr},
     time::Instant,
@@ -12,9 +12,16 @@ use lestra_crypto::{
 };
 
 use crate::admission::normalize_ip;
+use crate::config::SessionTimeouts;
 use crate::timer::HANDSHAKE_TIMEOUT;
 
 pub type ConnectionId = [u8; 8];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpirationReason {
+    IdleTimeout,
+    MaxLifetime,
+}
 
 #[derive(Debug)]
 pub enum SessionTableError {
@@ -24,6 +31,7 @@ pub enum SessionTableError {
     PendingCapacityExceeded,
     ConnectionIdCollision,
     UnknownConnection,
+    SessionExpired,
 }
 
 impl fmt::Display for SessionTableError {
@@ -39,6 +47,7 @@ impl fmt::Display for SessionTableError {
             Self::PendingCapacityExceeded => f.write_str("pending session capacity exceeded"),
             Self::ConnectionIdCollision => f.write_str("connection ID collision"),
             Self::UnknownConnection => f.write_str("unknown connection ID"),
+            Self::SessionExpired => f.write_str("session lifetime has expired"),
         }
     }
 }
@@ -82,6 +91,11 @@ pub enum RouteEvent {
     Closed {
         cid: ConnectionId,
     },
+
+    Expired {
+        cid: ConnectionId,
+        reason: ExpirationReason,
+    },
 }
 
 struct PendingEntry {
@@ -92,6 +106,27 @@ struct PendingEntry {
 struct EstablishedEntry {
     session: EstablishedSession,
     confirmation_deadline: Instant,
+
+    created_at: Instant,
+    last_activity: Instant,
+}
+
+impl EstablishedEntry {
+    fn expiration_reason(
+        &self,
+        now: Instant,
+        timeouts: SessionTimeouts,
+    ) -> Option<ExpirationReason> {
+        if now.saturating_duration_since(self.created_at) >= timeouts.max_lifetime {
+            return Some(ExpirationReason::MaxLifetime);
+        }
+
+        if now.saturating_duration_since(self.last_activity) >= timeouts.idle_timeout {
+            return Some(ExpirationReason::IdleTimeout);
+        }
+
+        None
+    }
 }
 
 /// Bounded server-side session registry.
@@ -104,17 +139,37 @@ pub struct SessionTable {
     pending: HashMap<ConnectionId, PendingEntry>,
     established: HashMap<ConnectionId, EstablishedEntry>,
 
+    idle_index: BTreeSet<(Instant, ConnectionId)>,
+    lifetime_index: BTreeSet<(Instant, ConnectionId)>,
+    confirmation_index: BTreeSet<(Instant, ConnectionId)>,
+
     max_sessions: usize,
     max_pending: usize,
+
+    timeouts: SessionTimeouts,
 }
 
 impl SessionTable {
     pub fn new(max_sessions: usize, max_pending: usize) -> Self {
+        Self::with_timeouts(max_sessions, max_pending, SessionTimeouts::default())
+    }
+
+    pub fn with_timeouts(
+        max_sessions: usize,
+        max_pending: usize,
+        timeouts: SessionTimeouts,
+    ) -> Self {
         Self {
             pending: HashMap::new(),
             established: HashMap::new(),
+
+            idle_index: BTreeSet::new(),
+            lifetime_index: BTreeSet::new(),
+            confirmation_index: BTreeSet::new(),
+
             max_sessions,
             max_pending,
+            timeouts,
         }
     }
 
@@ -224,8 +279,15 @@ impl SessionTable {
                 EstablishedEntry {
                     session,
                     confirmation_deadline: entry.deadline,
+                    created_at: now,
+                    last_activity: now,
                 },
             );
+
+            self.idle_index.insert((now, cid));
+            self.lifetime_index.insert((now, cid));
+
+            self.confirmation_index.insert((entry.deadline, cid));
 
             return Ok(RouteEvent::Established {
                 cid,
@@ -242,8 +304,19 @@ impl SessionTable {
             return Ok(RouteEvent::Ignored);
         }
 
+        // Expired sessions cannot accept packets even if
+        // periodic maintenance has not removed them yet.
+        if let Some(reason) = entry.expiration_reason(now, self.timeouts) {
+            self.remove_established(cid);
+
+            return Ok(RouteEvent::Expired { cid, reason });
+        }
+
         if now >= entry.confirmation_deadline {
             entry.session.discard_confirmation_cache();
+
+            self.confirmation_index
+                .remove(&(entry.confirmation_deadline, cid));
         }
 
         if kind == PacketType::Confirm {
@@ -264,10 +337,22 @@ impl SessionTable {
 
         let result = entry.session.receive(source, bytes, output);
 
+        // Refresh idle activity only after successful
+        // authentication and replay validation.
+        if matches!(&result, Ok(ReceiveEvent::Data(_))) {
+            let previous = entry.last_activity;
+
+            entry.last_activity = previous.max(now);
+
+            self.idle_index.remove(&(previous, cid));
+
+            self.idle_index.insert((entry.last_activity, cid));
+        }
+
         let closed = entry.session.is_closed();
 
         if closed {
-            self.established.remove(&cid);
+            self.remove_established(cid);
         }
 
         match result? {
@@ -275,6 +360,50 @@ impl SessionTable {
 
             ReceiveEvent::Closed => Ok(RouteEvent::Closed { cid }),
         }
+    }
+
+    /// Remove an established session and all timer indexes.
+    fn remove_established(&mut self, cid: ConnectionId) -> bool {
+        let Some(entry) = self.established.remove(&cid) else {
+            return false;
+        };
+
+        self.idle_index.remove(&(entry.last_activity, cid));
+
+        self.lifetime_index.remove(&(entry.created_at, cid));
+
+        self.confirmation_index
+            .remove(&(entry.confirmation_deadline, cid));
+
+        true
+    }
+
+    /// Remove one expired established session.
+    ///
+    /// Returns at most one event per invocation.
+    /// Absolute lifetime expiration takes precedence.
+    pub fn pop_expired(&mut self, now: Instant) -> Option<(ConnectionId, ExpirationReason)> {
+        let expired = self
+            .lifetime_index
+            .first()
+            .filter(|(created, _)| {
+                now.saturating_duration_since(*created) >= self.timeouts.max_lifetime
+            })
+            .map(|&(_, cid)| (cid, ExpirationReason::MaxLifetime))
+            .or_else(|| {
+                self.idle_index
+                    .first()
+                    .filter(|(activity, _)| {
+                        now.saturating_duration_since(*activity) >= self.timeouts.idle_timeout
+                    })
+                    .map(|&(_, cid)| (cid, ExpirationReason::IdleTimeout))
+            });
+
+        if let Some((cid, _)) = expired {
+            self.remove_established(cid);
+        }
+
+        expired
     }
 
     /// Protect an outgoing application datagram.
@@ -309,12 +438,19 @@ impl SessionTable {
             .get_mut(&cid)
             .ok_or(SessionTableError::UnknownConnection)?;
 
+        if entry
+            .expiration_reason(Instant::now(), self.timeouts)
+            .is_some()
+        {
+            return Err(SessionTableError::SessionExpired);
+        }
+
         let destination = entry.session.remote_endpoint();
 
         let result = send(&mut entry.session);
 
         if entry.session.is_closed() {
-            self.established.remove(&cid);
+            self.remove_established(cid);
         }
 
         Ok((destination, result?))
@@ -322,20 +458,25 @@ impl SessionTable {
 
     /// Retire a pending or established session.
     pub fn remove(&mut self, cid: ConnectionId) -> bool {
-        self.pending.remove(&cid).is_some() || self.established.remove(&cid).is_some()
+        self.pending.remove(&cid).is_some() || self.remove_established(cid)
     }
 
     /// Expire pending handshakes and READY recovery caches.
     ///
-    /// Established sessions are not evicted by this method.
-    /// Returns the number of removed pending handshakes.
+    /// Established session lifetime is handled by pop_expired().
     pub fn expire_handshakes(&mut self, now: Instant) -> usize {
         let previous = self.pending.len();
 
         self.pending.retain(|_, entry| now < entry.deadline);
 
-        for entry in self.established.values_mut() {
-            if now >= entry.confirmation_deadline {
+        while let Some(&(deadline, cid)) = self.confirmation_index.first() {
+            if now < deadline {
+                break;
+            }
+
+            self.confirmation_index.remove(&(deadline, cid));
+
+            if let Some(entry) = self.established.get_mut(&cid) {
                 entry.session.discard_confirmation_cache();
             }
         }

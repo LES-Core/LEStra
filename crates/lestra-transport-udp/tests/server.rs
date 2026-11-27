@@ -10,7 +10,8 @@ use lestra_codec::MAX_DATAGRAM_LEN;
 use lestra_crypto::{ClientStart, EstablishedSession, MAX_DATA_SIZE, RESPONSE_SIZE, ReceiveEvent};
 
 use lestra_transport_udp::{
-    ConnectStatus, ConnectionId, ServerConfig, ServerEvent, UdpClient, UdpIo, UdpServer,
+    ConnectStatus, ConnectionId, ExpirationReason, ServerConfig, ServerEvent, SessionTimeouts,
+    UdpClient, UdpIo, UdpServer,
 };
 
 use snow::{Builder, Keypair, params::NoiseParams};
@@ -344,6 +345,67 @@ fn unauthorized_client_does_not_allocate_session() -> TestResult {
     assert_eq!(poll_event(&mut server, &mut output)?, ServerEvent::Ignored);
 
     assert_eq!(server.pending_len(), 0);
+    assert_eq!(server.established_len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn server_reports_session_expiration_without_network_input() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let config = ServerConfig {
+        timeouts: SessionTimeouts {
+            idle_timeout: Duration::ZERO,
+            max_lifetime: Duration::from_secs(60),
+        },
+        ..ServerConfig::default()
+    };
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        config,
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let mut client = UdpClient::connect(
+        UdpIo::bind(address())?,
+        server.local_addr()?,
+        &key32(&client_key.private),
+        &key32(&server_key.public),
+        [1; 8],
+    )?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    let cid = loop {
+        client.poll()?;
+
+        if let ServerEvent::Established { cid, .. } = server.poll(&mut output)? {
+            break cid;
+        }
+
+        assert!(Instant::now() < deadline, "server establishment timeout");
+
+        thread::sleep(Duration::from_millis(1));
+    };
+
+    assert_eq!(server.established_len(), 1);
+
+    // No new datagram is needed to trigger expiration.
+    assert_eq!(
+        server.poll(&mut output)?,
+        ServerEvent::Expired {
+            cid,
+            reason: ExpirationReason::IdleTimeout,
+        }
+    );
+
     assert_eq!(server.established_len(), 0);
 
     Ok(())

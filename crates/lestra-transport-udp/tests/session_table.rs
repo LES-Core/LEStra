@@ -10,7 +10,9 @@ use lestra_crypto::{
     PacketProtectionError, ReceiveEvent, ServerAwaitingConfirm, ServerStart,
 };
 
-use lestra_transport_udp::{ConnectionId, RouteEvent, SessionTable, SessionTableError};
+use lestra_transport_udp::{
+    ConnectionId, ExpirationReason, RouteEvent, SessionTable, SessionTableError, SessionTimeouts,
+};
 
 use snow::{Builder, params::NoiseParams};
 
@@ -404,6 +406,237 @@ fn pending_capacity_is_limited_per_ip() -> TestResult {
     assert_eq!(table.pending_for_ip(ip), 1);
 
     assert!(table.has_pending_capacity_for_ip(ip, 2,));
+
+    Ok(())
+}
+
+#[test]
+fn idle_session_expires_at_exact_boundary() -> TestResult {
+    let now = Instant::now();
+
+    let timeouts = SessionTimeouts {
+        idle_timeout: Duration::from_secs(5),
+        max_lifetime: Duration::from_secs(60),
+    };
+
+    let mut table = SessionTable::with_timeouts(10, 5, timeouts);
+
+    let _client = establish(&mut table, now, [1; 8], [2; 8], addr(4000))?;
+
+    assert_eq!(table.pop_expired(now + Duration::from_millis(4999)), None);
+
+    assert_eq!(
+        table.pop_expired(now + Duration::from_secs(5)),
+        Some(([2; 8], ExpirationReason::IdleTimeout,))
+    );
+
+    assert!(table.is_empty());
+
+    assert_eq!(table.pop_expired(now + Duration::from_secs(60)), None);
+
+    Ok(())
+}
+
+#[test]
+fn only_authenticated_fresh_data_refreshes_idle_timeout() -> TestResult {
+    let now = Instant::now();
+
+    let mut table = SessionTable::with_timeouts(
+        10,
+        5,
+        SessionTimeouts {
+            idle_timeout: Duration::from_secs(5),
+            max_lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let mut client = establish(&mut table, now, [1; 8], [2; 8], addr(4000))?;
+
+    let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    let len = client.send_data(b"active", &mut packet)?;
+
+    // Refresh activity at t = 4 seconds.
+    assert_eq!(
+        table.route(
+            now + Duration::from_secs(4),
+            addr(4000),
+            &packet[..len],
+            &mut output,
+        )?,
+        RouteEvent::Data {
+            cid: [2; 8],
+            len: 6,
+        }
+    );
+
+    let later = now + Duration::from_secs(8);
+
+    assert_eq!(table.pop_expired(later), None);
+
+    // Replayed DATA cannot refresh the idle timeout.
+    assert!(matches!(
+        table.route(later, addr(4000), &packet[..len], &mut output,),
+        Err(SessionTableError::Protection(
+            PacketProtectionError::ReplayRejected
+        ))
+    ));
+
+    // Fresh packet number with an invalid AEAD tag.
+    let len = client.send_data(b"forged", &mut packet)?;
+
+    packet[len - 1] ^= 1;
+
+    assert!(matches!(
+        table.route(later, addr(4000), &packet[..len], &mut output,),
+        Err(SessionTableError::Protection(PacketProtectionError::Noise(
+            _
+        )))
+    ));
+
+    // Last authenticated activity remains at t = 4.
+    assert_eq!(
+        table.pop_expired(now + Duration::from_secs(9)),
+        Some(([2; 8], ExpirationReason::IdleTimeout,))
+    );
+
+    assert!(table.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn maximum_lifetime_cannot_be_extended_by_data() -> TestResult {
+    let now = Instant::now();
+
+    let mut table = SessionTable::with_timeouts(
+        10,
+        5,
+        SessionTimeouts {
+            idle_timeout: Duration::from_secs(5),
+            max_lifetime: Duration::from_secs(12),
+        },
+    );
+
+    let mut client = establish(&mut table, now, [1; 8], [2; 8], addr(4000))?;
+
+    let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    for seconds in [4, 8, 11] {
+        let len = client.send_data(b"active", &mut packet)?;
+
+        assert_eq!(
+            table.route(
+                now + Duration::from_secs(seconds),
+                addr(4000),
+                &packet[..len],
+                &mut output,
+            )?,
+            RouteEvent::Data {
+                cid: [2; 8],
+                len: 6,
+            }
+        );
+    }
+
+    assert_eq!(table.pop_expired(now + Duration::from_secs(11)), None);
+
+    let len = client.send_data(b"expired", &mut packet)?;
+
+    output.fill(0xAA);
+
+    // Expiration is checked even before maintenance.
+    assert_eq!(
+        table.route(
+            now + Duration::from_secs(12),
+            addr(4000),
+            &packet[..len],
+            &mut output,
+        )?,
+        RouteEvent::Expired {
+            cid: [2; 8],
+            reason: ExpirationReason::MaxLifetime,
+        }
+    );
+
+    assert_eq!(output, [0xAA; MAX_DATA_SIZE]);
+    assert!(table.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn removed_session_does_not_leave_stale_timer_entries() -> TestResult {
+    let now = Instant::now();
+
+    let mut table = SessionTable::with_timeouts(
+        10,
+        5,
+        SessionTimeouts {
+            idle_timeout: Duration::from_secs(5),
+            max_lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let _first = establish(&mut table, now, [1; 8], [2; 8], addr(4000))?;
+
+    assert!(table.remove([2; 8]));
+
+    // Reuse a test CID to detect stale timer indexes.
+    let _second = establish(
+        &mut table,
+        now + Duration::from_secs(4),
+        [3; 8],
+        [2; 8],
+        addr(4001),
+    )?;
+
+    assert_eq!(table.pop_expired(now + Duration::from_secs(5)), None);
+
+    assert_eq!(table.established_len(), 1);
+
+    assert_eq!(
+        table.pop_expired(now + Duration::from_secs(9)),
+        Some(([2; 8], ExpirationReason::IdleTimeout,))
+    );
+
+    assert!(table.is_empty());
+
+    Ok(())
+}
+
+#[test]
+fn expired_session_cannot_protect_outgoing_data() -> TestResult {
+    let now = Instant::now();
+
+    let mut table = SessionTable::with_timeouts(
+        10,
+        5,
+        SessionTimeouts {
+            idle_timeout: Duration::ZERO,
+            max_lifetime: Duration::from_secs(60),
+        },
+    );
+
+    let _client = establish(&mut table, now, [1; 8], [2; 8], addr(4000))?;
+
+    let mut packet = [0xAA_u8; MAX_DATAGRAM_LEN];
+
+    assert!(matches!(
+        table.send_data([2; 8], b"expired", &mut packet,),
+        Err(SessionTableError::SessionExpired)
+    ));
+
+    assert_eq!(packet, [0xAA; MAX_DATAGRAM_LEN]);
+
+    assert_eq!(
+        table.pop_expired(Instant::now()),
+        Some(([2; 8], ExpirationReason::IdleTimeout,))
+    );
+
+    assert!(table.is_empty());
 
     Ok(())
 }

@@ -11,6 +11,7 @@ use lestra_crypto::{INITIAL_SIZE, MAX_DATA_SIZE, READY_SIZE, RESPONSE_SIZE, Serv
 use crate::{
     AdmissionGate, ConnectionId, IncomingDatagram, RouteEvent, ServerConfig, SessionTable, UdpIo,
     initial_cache::{InitialCache, InitialRecord, initial_key},
+    session_table::ExpirationReason,
 };
 
 const MAINTENANCE_INTERVAL: Duration = Duration::from_millis(250);
@@ -35,6 +36,11 @@ pub enum ServerEvent {
     Data {
         cid: ConnectionId,
         len: usize,
+    },
+
+    Expired {
+        cid: ConnectionId,
+        reason: ExpirationReason,
     },
 
     Closed {
@@ -236,6 +242,10 @@ impl ServerState<'_> {
 
             RouteEvent::Data { cid, len } => Action::Event(ServerEvent::Data { cid, len }),
 
+            RouteEvent::Expired { cid, reason } => {
+                Action::Event(ServerEvent::Expired { cid, reason })
+            }
+
             RouteEvent::Closed { cid } => Action::Event(ServerEvent::Closed { cid }),
         })
     }
@@ -267,7 +277,11 @@ impl<'a> UdpServer<'a> {
                 server_private,
                 allowed_client,
 
-                sessions: SessionTable::new(config.max_sessions, config.max_pending),
+                sessions: SessionTable::with_timeouts(
+                    config.max_sessions,
+                    config.max_pending,
+                    config.timeouts,
+                ),
 
                 admission: AdmissionGate::new(config.admission, now),
 
@@ -296,6 +310,10 @@ impl<'a> UdpServer<'a> {
         let now = Instant::now();
 
         self.state.maintenance(now);
+
+        if let Some((cid, reason)) = self.state.sessions.pop_expired(now) {
+            return Ok(ServerEvent::Expired { cid, reason });
+        }
 
         let action = match self.io.poll_recv() {
             Ok(Some(IncomingDatagram::Packet {
