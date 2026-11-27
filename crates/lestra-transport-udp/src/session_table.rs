@@ -506,10 +506,7 @@ impl SessionTable {
             .get_mut(&cid)
             .ok_or(SessionTableError::UnknownConnection)?;
 
-        if entry
-            .expiration_reason(Instant::now(), self.timeouts)
-            .is_some()
-        {
+        if entry.expiration_reason(now, self.timeouts).is_some() {
             return Err(SessionTableError::SessionExpired);
         }
 
