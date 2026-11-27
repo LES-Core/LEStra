@@ -12,7 +12,7 @@ pub const HEADER_LEN: usize = 26;
 pub const MAX_DATAGRAM_LEN: usize = 1200;
 pub const AEAD_TAG_LEN: usize = 16;
 pub const DRAFT_WIRE_MAJOR: u8 = 1;
-pub const MAX_PACKET_NUMBER_EXCLUSIVE: u64 = 1_u64 << 32;
+pub use lestra_core::MAX_PACKET_NUMBER_EXCLUSIVE;
 
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
