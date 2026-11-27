@@ -6,9 +6,16 @@ pub const AEAD_TAG_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeError {
-    Truncated, Oversized, InvalidMagic, UnsupportedVersion,
-    InvalidType, ReservedFlags, LengthMismatch, InvalidConnectionId,
-    InvalidPacketNumber, InvalidBodyLength,
+    Truncated,
+    Oversized,
+    InvalidMagic,
+    UnsupportedVersion,
+    InvalidType,
+    ReservedFlags,
+    LengthMismatch,
+    InvalidConnectionId,
+    InvalidPacketNumber,
+    InvalidBodyLength,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,32 +30,61 @@ pub struct Envelope<'a> {
 /// Performs only bounded syntactic checks, with borrowed slices and no allocation.
 /// Ciphertext remains unauthenticated until the Noise/AEAD layer verifies it.
 pub fn decode_envelope(bytes: &[u8]) -> Result<Envelope<'_>, DecodeError> {
-    if bytes.len() < HEADER_LEN { return Err(DecodeError::Truncated); }
-    if bytes.len() > MAX_UDP_PAYLOAD { return Err(DecodeError::Oversized); }
-    if &bytes[..4] != b"LSTR" { return Err(DecodeError::InvalidMagic); }
-    if bytes[4] != 1 { return Err(DecodeError::UnsupportedVersion); }
+    if bytes.len() < HEADER_LEN {
+        return Err(DecodeError::Truncated);
+    }
+    if bytes.len() > MAX_UDP_PAYLOAD {
+        return Err(DecodeError::Oversized);
+    }
+    if &bytes[..4] != b"LSTR" {
+        return Err(DecodeError::InvalidMagic);
+    }
+    if bytes[4] != 1 {
+        return Err(DecodeError::UnsupportedVersion);
+    }
     let kind = bytes[5];
-    if !(1..=6).contains(&kind) { return Err(DecodeError::InvalidType); }
-    if bytes[6] != 0 || bytes[7] != 0 { return Err(DecodeError::ReservedFlags); }
+    if !(1..=6).contains(&kind) {
+        return Err(DecodeError::InvalidType);
+    }
+    if bytes[6] != 0 || bytes[7] != 0 {
+        return Err(DecodeError::ReservedFlags);
+    }
     let body_len = usize::from(u16::from_be_bytes([bytes[24], bytes[25]]));
-    if body_len != bytes.len() - HEADER_LEN { return Err(DecodeError::LengthMismatch); }
+    if body_len != bytes.len() - HEADER_LEN {
+        return Err(DecodeError::LengthMismatch);
+    }
     let dcid: [u8; 8] = bytes[8..16].try_into().expect("26-byte header validated");
-    let packet_number = u64::from_be_bytes(bytes[16..24].try_into().expect("26-byte header validated"));
+    let packet_number =
+        u64::from_be_bytes(bytes[16..24].try_into().expect("26-byte header validated"));
     let empty_cid = dcid == [0; 8];
 
     match kind {
         1 => {
-            if !empty_cid { return Err(DecodeError::InvalidConnectionId); }
-            if packet_number != 0 { return Err(DecodeError::InvalidPacketNumber); }
-            if body_len != 130 { return Err(DecodeError::InvalidBodyLength); }
+            if !empty_cid {
+                return Err(DecodeError::InvalidConnectionId);
+            }
+            if packet_number != 0 {
+                return Err(DecodeError::InvalidPacketNumber);
+            }
+            if body_len != 130 {
+                return Err(DecodeError::InvalidBodyLength);
+            }
         }
         2 => {
-            if empty_cid { return Err(DecodeError::InvalidConnectionId); }
-            if packet_number != 0 { return Err(DecodeError::InvalidPacketNumber); }
-            if body_len != 82 { return Err(DecodeError::InvalidBodyLength); }
+            if empty_cid {
+                return Err(DecodeError::InvalidConnectionId);
+            }
+            if packet_number != 0 {
+                return Err(DecodeError::InvalidPacketNumber);
+            }
+            if body_len != 82 {
+                return Err(DecodeError::InvalidBodyLength);
+            }
         }
         3..=6 => {
-            if empty_cid { return Err(DecodeError::InvalidConnectionId); }
+            if empty_cid {
+                return Err(DecodeError::InvalidConnectionId);
+            }
             if packet_number >= MAX_PACKET_NUMBER_EXCLUSIVE {
                 return Err(DecodeError::InvalidPacketNumber);
             }
@@ -60,8 +96,7 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<Envelope<'_>, DecodeError> {
             {
                 return Err(DecodeError::InvalidPacketNumber);
             }
-            if (kind == 4 && body_len < AEAD_TAG_LEN)
-                || (kind != 4 && body_len != AEAD_TAG_LEN) {
+            if (kind == 4 && body_len < AEAD_TAG_LEN) || (kind != 4 && body_len != AEAD_TAG_LEN) {
                 return Err(DecodeError::InvalidBodyLength);
             }
         }
@@ -69,7 +104,9 @@ pub fn decode_envelope(bytes: &[u8]) -> Result<Envelope<'_>, DecodeError> {
     }
 
     Ok(Envelope {
-        kind, dcid, packet_number,
+        kind,
+        dcid,
+        packet_number,
         header: &bytes[..HEADER_LEN],
         body: &bytes[HEADER_LEN..],
     })

@@ -66,27 +66,45 @@ fn noise_ik_transcript_matches_reference() -> TestResult {
     let mut received = [0_u8; 128];
     let count1 = responder.read_message(&out[..len1], &mut received)?;
     assert_eq!(&received[..count1], first_payload);
-    assert_eq!(responder.get_remote_static(), Some(client_public.as_slice()));
+    assert_eq!(
+        responder.get_remote_static(),
+        Some(client_public.as_slice())
+    );
 
     let mut second_payload = hex_field(&hs["response"], "header_hex");
     second_payload.extend(hex_field(&v["cids"], "server_hex"));
     let len2 = responder.write_message(&second_payload, &mut out)?;
     assert_eq!(len2, 82);
-    assert_eq!(&out[..len2], hex_field(&hs["response"], "noise_message_hex"));
+    assert_eq!(
+        &out[..len2],
+        hex_field(&hs["response"], "noise_message_hex")
+    );
     let count2 = initiator.read_message(&out[..len2], &mut received)?;
     assert_eq!(&received[..count2], second_payload);
     assert!(initiator.is_handshake_finished());
     assert!(responder.is_handshake_finished());
-    assert_eq!(initiator.get_handshake_hash(), responder.get_handshake_hash());
-    assert_eq!(initiator.get_handshake_hash(), hex_field(hs, "handshake_hash_hex"));
+    assert_eq!(
+        initiator.get_handshake_hash(),
+        responder.get_handshake_hash()
+    );
+    assert_eq!(
+        initiator.get_handshake_hash(),
+        hex_field(hs, "handshake_hash_hex")
+    );
 
     // This is an isolated verification helper, NOT a production key export API.
     let (client_to_server, server_to_client) = initiator.dangerously_get_raw_split();
     let (responder_c2s, responder_s2c) = responder.dangerously_get_raw_split();
     assert_eq!(client_to_server, responder_c2s);
     assert_eq!(server_to_client, responder_s2c);
-    assert_eq!(client_to_server.as_slice(), hex_field(hs, "client_to_server_key_hex"));
-    assert_eq!(server_to_client.as_slice(), hex_field(hs, "server_to_client_key_hex"));
+    assert_eq!(
+        client_to_server.as_slice(),
+        hex_field(hs, "client_to_server_key_hex")
+    );
+    assert_eq!(
+        server_to_client.as_slice(),
+        hex_field(hs, "server_to_client_key_hex")
+    );
     assert_ne!(client_to_server, server_to_client);
     Ok(())
 }
@@ -113,7 +131,10 @@ fn protected_packets_authenticate_entire_header() -> TestResult {
         assert_eq!(header[4], 1);
         assert_eq!(&header[6..8], &[0_u8; 2]);
         assert_eq!(u64::from_be_bytes(header[16..24].try_into()?), pn);
-        assert_eq!(usize::from(u16::from_be_bytes(header[24..26].try_into()?)), ciphertext.len());
+        assert_eq!(
+            usize::from(u16::from_be_bytes(header[24..26].try_into()?)),
+            ciphertext.len()
+        );
         assert_eq!(full, [&header[..], &ciphertext[..]].concat());
         assert!(full.len() <= MAX_UDP);
         assert_eq!(ciphertext.len(), plaintext.len() + 16);
@@ -132,31 +153,55 @@ fn protected_packets_authenticate_entire_header() -> TestResult {
         let cipher = ChaCha20Poly1305::new_from_slice(if to_server { &key_c2s } else { &key_s2c })
             .expect("fixture keys are 32 bytes");
         let nonce_bytes = nonce(pn);
-        let produced = cipher.encrypt(
-            Nonce::from_slice(&nonce_bytes),
-            Payload { msg: &plaintext, aad: &header },
-        ).expect("encrypt reference");
+        let produced = cipher
+            .encrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: &plaintext,
+                    aad: &header,
+                },
+            )
+            .expect("encrypt reference");
         assert_eq!(produced, ciphertext, "AEAD mismatch for {kind}");
-        let recovered = cipher.decrypt(
-            Nonce::from_slice(&nonce_bytes),
-            Payload { msg: &ciphertext, aad: &header },
-        ).expect("decrypt reference");
+        let recovered = cipher
+            .decrypt(
+                Nonce::from_slice(&nonce_bytes),
+                Payload {
+                    msg: &ciphertext,
+                    aad: &header,
+                },
+            )
+            .expect("decrypt reference");
         assert_eq!(recovered, plaintext);
 
         let mut bad_header = header.clone();
         bad_header[11] ^= 1;
-        assert!(cipher.decrypt(
-            Nonce::from_slice(&nonce_bytes),
-            Payload { msg: &ciphertext, aad: &bad_header },
-        ).is_err());
+        assert!(
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&nonce_bytes),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: &bad_header
+                    },
+                )
+                .is_err()
+        );
 
         let mut bad_ciphertext = ciphertext.clone();
         let last = bad_ciphertext.len() - 1;
         bad_ciphertext[last] ^= 1;
-        assert!(cipher.decrypt(
-            Nonce::from_slice(&nonce_bytes),
-            Payload { msg: &bad_ciphertext, aad: &header },
-        ).is_err());
+        assert!(
+            cipher
+                .decrypt(
+                    Nonce::from_slice(&nonce_bytes),
+                    Payload {
+                        msg: &bad_ciphertext,
+                        aad: &header
+                    },
+                )
+                .is_err()
+        );
     }
     Ok(())
 }

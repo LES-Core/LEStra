@@ -6,6 +6,8 @@
 //!
 //! Draft major 1 is NOT a declaration that the production protocol is stable.
 
+pub mod v2;
+
 use core::fmt;
 
 pub const HEADER_LEN: usize = 26;

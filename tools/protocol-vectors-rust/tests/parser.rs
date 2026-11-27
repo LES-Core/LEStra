@@ -1,9 +1,11 @@
 //! Structural framing tests; passing does not authenticate ciphertext.
-use lestra_protocol_vectors::{decode_envelope, HEADER_LEN, MAX_UDP_PAYLOAD, AEAD_TAG_LEN};
+use lestra_protocol_vectors::{AEAD_TAG_LEN, HEADER_LEN, MAX_UDP_PAYLOAD, decode_envelope};
 use proptest::prelude::*;
 use serde_json::Value;
 const FIXTURE: &str = include_str!("../../../spec/v1/vectors/parser_cases.json");
-fn fixtures() -> Value { serde_json::from_str(FIXTURE).expect("fixture JSON") }
+fn fixtures() -> Value {
+    serde_json::from_str(FIXTURE).expect("fixture JSON")
+}
 fn buf(entry: &Value) -> Vec<u8> {
     hex::decode(entry["hex"].as_str().expect("hex fixture")).expect("hex")
 }
@@ -41,7 +43,9 @@ fn packet_type_counter_mapping_is_strict_for_all_protected_types() {
         "data-zero-packet-number",
         "close-zero-packet-number",
     ] {
-        let entry = negative.iter().find(|item| item["name"] == case)
+        let entry = negative
+            .iter()
+            .find(|item| item["name"] == case)
             .expect("missing committed negative fixture");
         assert!(decode_envelope(&buf(entry)).is_err(), "{case}");
     }

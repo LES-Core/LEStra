@@ -115,7 +115,10 @@ fn authenticate_packet(
     let plaintext = cipher
         .decrypt(
             Nonce::from_slice(&nonce),
-            Payload { msg: ciphertext, aad: header },
+            Payload {
+                msg: ciphertext,
+                aad: header,
+            },
         )
         .ok()?;
     replay.record_authenticated(number);
@@ -172,7 +175,9 @@ fn huge_shift_expires_old_bitmap_without_allocation() {
 
 #[test]
 fn limit_and_nonce_exhaustion_fail_closed() {
-    let mut send = SendCounter { next: PACKET_LIMIT - 2 };
+    let mut send = SendCounter {
+        next: PACKET_LIMIT - 2,
+    };
     assert_eq!(send.next_new_packet(), Some(PACKET_LIMIT - 2));
     assert_eq!(send.next_new_packet(), Some(PACKET_LIMIT - 1));
     assert_eq!(send.next_new_packet(), None);
@@ -198,15 +203,20 @@ fn tampered_high_packet_number_does_not_advance_window() {
     let c1 = hex_field(data, "ciphertext_hex");
     let mut replay = ReplayWindow::default();
 
-    assert_eq!(authenticate_packet(&mut replay, &key, &h0, &c0), Some(Vec::new()));
+    assert_eq!(
+        authenticate_packet(&mut replay, &key, &h0, &c0),
+        Some(Vec::new())
+    );
     assert_eq!(replay.highest, Some(0));
     let mut forged_header = h1.clone();
     forged_header[16..24].copy_from_slice(&500_000_u64.to_be_bytes());
     assert!(replay.candidate(500_000));
     assert!(authenticate_packet(&mut replay, &key, &forged_header, &c1).is_none());
     assert_eq!(replay.highest, Some(0));
-    assert_eq!(authenticate_packet(&mut replay, &key, &h1, &c1),
-        Some(b"LEStra vector test payload".to_vec()));
+    assert_eq!(
+        authenticate_packet(&mut replay, &key, &h1, &c1),
+        Some(b"LEStra vector test payload".to_vec())
+    );
     assert_eq!(replay.highest, Some(1));
     assert!(authenticate_packet(&mut replay, &key, &h1, &c1).is_none());
 }
@@ -222,7 +232,10 @@ fn corrupt_tag_does_not_consume_packet_number() {
     assert!(authenticate_packet(&mut replay, &key, &header, &ciphertext).is_none());
     assert_eq!(replay.highest, None);
     ciphertext[0] ^= 1;
-    assert_eq!(authenticate_packet(&mut replay, &key, &header, &ciphertext), Some(Vec::new()));
+    assert_eq!(
+        authenticate_packet(&mut replay, &key, &header, &ciphertext),
+        Some(Vec::new())
+    );
 }
 
 #[test]
@@ -237,7 +250,6 @@ fn receive_windows_are_per_direction_and_per_session() {
     // A fresh Noise session gets a fresh window and keys, not a restored nonce.
     assert!(ReplayWindow::default().candidate(0));
 }
-
 
 // A deterministic reference model can expose mistakes in bitmap shifts and
 // window boundaries, but is not a concurrent production receiver.
@@ -308,10 +320,15 @@ fn parallel_authenticated_duplicates_commit_only_once() {
             // lock immediately before committing authenticated packet number.
             let cipher = ChaCha20Poly1305::new_from_slice(&key).expect("32-byte key");
             let n = [0_u8; 12]; // PN=0; 4-byte zero prefix and LE64(0)
-            let authentic = cipher.decrypt(
-                Nonce::from_slice(&n),
-                Payload { msg: &ciphertext, aad: &header },
-            ).is_ok();
+            let authentic = cipher
+                .decrypt(
+                    Nonce::from_slice(&n),
+                    Payload {
+                        msg: &ciphertext,
+                        aad: &header,
+                    },
+                )
+                .is_ok();
             barrier.wait();
             if !authentic {
                 return false;
