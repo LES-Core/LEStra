@@ -1,18 +1,18 @@
 //! Experimental native UDP transport for LEStra.
 //!
 //! Provides non-blocking UDP I/O, client handshake scheduling,
-//! server-side session routing, bounded INITIAL admission,
-//! amplification accounting, session expiration, secure
-//! datagram exchange and server DATA rate limiting.
+//! managed client connections, server-side session routing,
+//! bounded INITIAL admission, amplification accounting,
+//! session expiration and fixed-rate DATA transmission limits.
 //!
-//! Client pacing, adaptive congestion control,
-//! multi-identity authorization and production hardening
-//! remain incomplete.
+//! Adaptive congestion control, multi-identity authorization
+//! and production hardening remain incomplete.
 
 mod admission;
 mod amplification;
 mod client;
 mod config;
+mod connection;
 mod initial_cache;
 mod pacing;
 mod server;
@@ -26,7 +26,11 @@ pub use amplification::{AMPLIFICATION_FACTOR, AmplificationBudget};
 
 pub use client::{ConnectError, ConnectStatus, UdpClient};
 
-pub use config::{ServerConfig, SessionTimeouts};
+pub use config::{ClientConfig, ServerConfig, SessionTimeouts};
+
+pub use connection::{ConnectionCloseReason, ConnectionEvent, UdpConnection};
+
+pub use pacing::{DataPacingConfig, PacingLimit};
 
 pub use server::{ServerEvent, UdpServer};
 
@@ -35,5 +39,3 @@ pub use session_table::{
 };
 
 pub use socket::{IncomingDatagram, UdpIo};
-
-pub use pacing::{DataPacingConfig, PacingLimit};

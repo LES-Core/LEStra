@@ -8,7 +8,7 @@ use lestra_crypto::{
 };
 
 use crate::{
-    IncomingDatagram, UdpIo,
+    ClientConfig, IncomingDatagram, UdpConnection, UdpIo,
     timer::{HANDSHAKE_TIMEOUT, RetrySchedule},
 };
 
@@ -88,6 +88,7 @@ pub struct UdpClient {
     state: ClientState,
     retry: RetrySchedule,
     deadline: Instant,
+    established_at: Option<Instant>,
 }
 
 impl UdpClient {
@@ -118,6 +119,7 @@ impl UdpClient {
             state: ClientState::Initial(Box::new(pending)),
             retry: RetrySchedule::new(now, local_cid),
             deadline: now + HANDSHAKE_TIMEOUT,
+            established_at: None,
         })
     }
 
@@ -264,6 +266,8 @@ impl UdpClient {
 
                 self.state = ClientState::Established(pending.into_established()?);
 
+                self.established_at = Some(now);
+
                 Ok(ConnectStatus::Established)
             }
 
@@ -279,6 +283,18 @@ impl UdpClient {
     pub fn into_established(self) -> Result<(UdpIo, EstablishedSession), ConnectError> {
         match self.state {
             ClientState::Established(session) => Ok((self.io, session)),
+
+            _ => Err(ConnectError::NotEstablished),
+        }
+    }
+
+    /// Consume the handshake driver and create
+    /// a managed secure UDP connection.
+    pub fn into_connection(self, config: ClientConfig) -> Result<UdpConnection, ConnectError> {
+        match (self.state, self.established_at) {
+            (ClientState::Established(session), Some(established_at)) => {
+                Ok(UdpConnection::new(self.io, session, config, established_at))
+            }
 
             _ => Err(ConnectError::NotEstablished),
         }

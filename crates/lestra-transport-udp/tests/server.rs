@@ -10,8 +10,9 @@ use lestra_codec::{MAX_DATAGRAM_LEN, decode_packet};
 use lestra_crypto::{ClientStart, EstablishedSession, MAX_DATA_SIZE, RESPONSE_SIZE, ReceiveEvent};
 
 use lestra_transport_udp::{
-    ConnectStatus, ConnectionId, DataPacingConfig, ExpirationReason, IncomingDatagram, PacingLimit,
-    ServerConfig, ServerEvent, SessionTimeouts, UdpClient, UdpIo, UdpServer,
+    ClientConfig, ConnectError, ConnectStatus, ConnectionCloseReason, ConnectionEvent,
+    ConnectionId, DataPacingConfig, ExpirationReason, IncomingDatagram, PacingLimit, ServerConfig,
+    ServerEvent, SessionTimeouts, UdpClient, UdpConnection, UdpIo, UdpServer,
 };
 
 use snow::{Builder, Keypair, params::NoiseParams};
@@ -65,6 +66,67 @@ fn establish(
             return Err(
                 io::Error::new(io::ErrorKind::TimedOut, "client connection timeout").into(),
             );
+        }
+
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn establish_managed(
+    server: &mut UdpServer<'_>,
+    client_key: &Keypair,
+    server_key: &Keypair,
+    config: ClientConfig,
+) -> Result<UdpConnection, Box<dyn std::error::Error>> {
+    let mut client = UdpClient::connect(
+        UdpIo::bind(address())?,
+        server.local_addr()?,
+        &key32(&client_key.private),
+        &key32(&server_key.public),
+        [1; 8],
+    )?;
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    loop {
+        let status = client.poll()?;
+
+        server.poll(&mut output)?;
+
+        if status == ConnectStatus::Established {
+            return Ok(client.into_connection(config)?);
+        }
+
+        if Instant::now() >= deadline {
+            return Err(
+                io::Error::new(io::ErrorKind::TimedOut, "managed connection timeout").into(),
+            );
+        }
+
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn poll_connection(
+    connection: &mut UdpConnection,
+    output: &mut [u8; MAX_DATA_SIZE],
+) -> io::Result<ConnectionEvent> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    loop {
+        let event = connection.poll(output)?;
+
+        if event != ConnectionEvent::Idle {
+            return Ok(event);
+        }
+
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "connection event timeout",
+            ));
         }
 
         thread::sleep(Duration::from_millis(1));
@@ -543,6 +605,249 @@ fn global_pacing_limits_combined_session_traffic() -> TestResult {
     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
 
     assert_eq!(server.established_len(), 2);
+
+    Ok(())
+}
+
+#[test]
+fn managed_connection_exchanges_data() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        ServerConfig::default(),
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let mut client = establish_managed(
+        &mut server,
+        &client_key,
+        &server_key,
+        ClientConfig::default(),
+    )?;
+
+    let cid = client.remote_receive_cid();
+
+    assert!(!client.is_closed());
+
+    client.send_data(b"hello server")?;
+
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    assert_eq!(
+        poll_event(&mut server, &mut output)?,
+        ServerEvent::Data { cid, len: 12 }
+    );
+
+    assert_eq!(&output[..12], b"hello server");
+
+    server.send_data(cid, b"hello client")?;
+
+    assert_eq!(
+        poll_connection(&mut client, &mut output)?,
+        ConnectionEvent::Data { len: 12 }
+    );
+
+    assert_eq!(&output[..12], b"hello client");
+
+    client.send_close()?;
+
+    assert!(client.is_closed());
+
+    assert_eq!(client.close_reason(), Some(ConnectionCloseReason::Local));
+
+    assert_eq!(
+        poll_event(&mut server, &mut output)?,
+        ServerEvent::Closed { cid }
+    );
+
+    assert_eq!(server.established_len(), 0);
+
+    let error = client
+        .send_data(b"closed")
+        .expect_err("closed connection cannot send");
+
+    assert_eq!(error.kind(), io::ErrorKind::NotConnected);
+
+    Ok(())
+}
+
+#[test]
+fn managed_connection_enforces_pacing() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        ServerConfig::default(),
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let config = ClientConfig {
+        pacing: PacingLimit {
+            bytes_per_second: 0,
+            burst_bytes: 48,
+        },
+
+        ..ClientConfig::default()
+    };
+
+    let mut client = establish_managed(&mut server, &client_key, &server_key, config)?;
+
+    let cid = client.remote_receive_cid();
+
+    // 49 wire bytes exceed the available burst.
+    let error = client
+        .send_data(b"blocked")
+        .expect_err("pacing must reject oversized burst");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    // Exactly 48 wire bytes.
+    client.send_data(b"LEStra")?;
+
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    assert_eq!(
+        poll_event(&mut server, &mut output)?,
+        ServerEvent::Data { cid, len: 6 }
+    );
+
+    assert_eq!(&output[..6], b"LEStra");
+
+    let error = client
+        .send_data(b"")
+        .expect_err("pacing budget is exhausted");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    assert!(!client.is_closed());
+
+    // CLOSE must bypass the DATA budget.
+    client.send_close()?;
+
+    assert!(client.is_closed());
+
+    assert_eq!(
+        poll_event(&mut server, &mut output)?,
+        ServerEvent::Closed { cid }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn managed_connection_accepts_remote_close() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        ServerConfig::default(),
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let mut client = establish_managed(
+        &mut server,
+        &client_key,
+        &server_key,
+        ClientConfig::default(),
+    )?;
+
+    server.send_close(client.remote_receive_cid())?;
+
+    let mut output = [0xAA_u8; MAX_DATA_SIZE];
+
+    let expected = ConnectionEvent::Closed {
+        reason: ConnectionCloseReason::Remote,
+    };
+
+    assert_eq!(poll_connection(&mut client, &mut output)?, expected);
+
+    assert!(client.is_closed());
+
+    assert_eq!(client.close_reason(), Some(ConnectionCloseReason::Remote));
+
+    assert_eq!(output, [0xAA; MAX_DATA_SIZE]);
+
+    // Repeated closure cannot replace the original reason.
+    client.close_local();
+
+    assert_eq!(client.poll(&mut output)?, expected);
+
+    Ok(())
+}
+
+#[test]
+fn managed_connection_expires_without_network_input() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        ServerConfig::default(),
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let config = ClientConfig {
+        timeouts: SessionTimeouts {
+            idle_timeout: Duration::ZERO,
+            max_lifetime: Duration::from_secs(60),
+        },
+
+        ..ClientConfig::default()
+    };
+
+    let mut client = establish_managed(&mut server, &client_key, &server_key, config)?;
+
+    let mut output = [0xAA_u8; MAX_DATA_SIZE];
+
+    let error = client
+        .send_data(b"expired")
+        .expect_err("expired connection cannot send");
+
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+
+    assert_eq!(
+        client.poll(&mut output)?,
+        ConnectionEvent::Closed {
+            reason: ConnectionCloseReason::Expired(ExpirationReason::IdleTimeout,),
+        }
+    );
+
+    assert!(client.is_closed());
+    assert_eq!(output, [0xAA; MAX_DATA_SIZE]);
+
+    Ok(())
+}
+
+#[test]
+fn managed_connection_requires_authenticated_ready() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server = UdpSocket::bind(address())?;
+
+    let client = UdpClient::connect(
+        UdpIo::bind(address())?,
+        server.local_addr()?,
+        &key32(&client_key.private),
+        &key32(&server_key.public),
+        [1; 8],
+    )?;
+
+    assert!(matches!(
+        client.into_connection(ClientConfig::default()),
+        Err(ConnectError::NotEstablished)
+    ));
 
     Ok(())
 }

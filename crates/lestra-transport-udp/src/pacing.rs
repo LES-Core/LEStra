@@ -76,6 +76,21 @@ impl BytePacer {
         (bytes as u128).saturating_mul(CREDIT_SCALE)
     }
 
+    /// Reserve transmission credit from one budget.
+    pub(crate) fn reserve(&mut self, now: Instant, bytes: usize) -> bool {
+        self.refill(now);
+
+        let cost = Self::cost(bytes);
+
+        if self.credits < cost {
+            return false;
+        }
+
+        self.credits -= cost;
+
+        true
+    }
+
     /// Reserve transmission credit from both budgets.
     ///
     /// Neither budget is charged unless both have
@@ -202,5 +217,20 @@ mod tests {
         assert!(!local.reserve_pair(&mut global, now, 1,));
 
         assert!(!local.reserve_pair(&mut global, later, 1,));
+    }
+
+    #[test]
+    fn single_pacer_enforces_transmission_budget() {
+        let now = Instant::now();
+
+        let mut pacer = pacer(1000, 1200, now);
+
+        assert!(pacer.reserve(now, 1200));
+        assert!(!pacer.reserve(now, 1));
+
+        let later = now + Duration::from_millis(100);
+
+        assert!(pacer.reserve(later, 100));
+        assert!(!pacer.reserve(later, 1));
     }
 }

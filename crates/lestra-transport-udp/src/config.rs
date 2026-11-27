@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::{AdmissionLimits, DataPacingConfig};
+use crate::{AdmissionLimits, DataPacingConfig, PacingLimit};
 
 /// Established session lifetime policy.
 ///
@@ -40,6 +40,23 @@ impl Default for ServerConfig {
             admission: AdmissionLimits::default(),
             timeouts: SessionTimeouts::default(),
             pacing: DataPacingConfig::default(),
+        }
+    }
+}
+
+/// Established UDP client configuration.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClientConfig {
+    pub timeouts: SessionTimeouts,
+    pub pacing: PacingLimit,
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            timeouts: SessionTimeouts::default(),
+
+            pacing: DataPacingConfig::default().per_session,
         }
     }
 }
