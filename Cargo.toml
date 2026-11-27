@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/lestra-core", "crates/lestra-codec", "crates/lestra-sdk", "crates/lestra-crypto"]
+members = ["crates/lestra-core", "crates/lestra-codec", "crates/lestra-sdk", "crates/lestra-crypto", "crates/lestra-transport-udp"]
 resolver = "3"
 
 [workspace.package]

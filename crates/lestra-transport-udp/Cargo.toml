@@ -1,0 +1,15 @@
+[package]
+name = "lestra-transport-udp"
+description = "Native UDP transport for LEStra secure datagram sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+lestra-codec = { path = "../lestra-codec", version = "0.1.0" }
