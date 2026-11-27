@@ -5,13 +5,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lestra_codec::MAX_DATAGRAM_LEN;
+use lestra_codec::{MAX_DATAGRAM_LEN, decode_packet};
 
 use lestra_crypto::{ClientStart, EstablishedSession, MAX_DATA_SIZE, RESPONSE_SIZE, ReceiveEvent};
 
 use lestra_transport_udp::{
-    ConnectStatus, ConnectionId, ExpirationReason, ServerConfig, ServerEvent, SessionTimeouts,
-    UdpClient, UdpIo, UdpServer,
+    ConnectStatus, ConnectionId, DataPacingConfig, ExpirationReason, IncomingDatagram, PacingLimit,
+    ServerConfig, ServerEvent, SessionTimeouts, UdpClient, UdpIo, UdpServer,
 };
 
 use snow::{Builder, Keypair, params::NoiseParams};
@@ -407,6 +407,142 @@ fn server_reports_session_expiration_without_network_input() -> TestResult {
     );
 
     assert_eq!(server.established_len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn pacing_rejection_does_not_consume_packet_number() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let config = ServerConfig {
+        pacing: DataPacingConfig {
+            per_session: PacingLimit {
+                bytes_per_second: 0,
+                burst_bytes: 48,
+            },
+
+            global: PacingLimit {
+                bytes_per_second: 0,
+                burst_bytes: 1200,
+            },
+        },
+
+        ..ServerConfig::default()
+    };
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        config,
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let (mut io, mut client) = establish(&mut server, &client_key, &server_key, [1; 8])?;
+
+    let cid = client.remote_receive_cid();
+
+    // 7 payload bytes + 42 overhead = 49 bytes.
+    // The per-session burst permits only 48 bytes.
+    let error = server
+        .send_data(cid, b"blocked")
+        .expect_err("pacing limit must reject packet");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    // 6 payload bytes + 42 overhead = 48 bytes.
+    server.send_data(cid, b"LEStra")?;
+
+    let error = server
+        .send_data(cid, b"")
+        .expect_err("session budget is exhausted");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+
+    let mut output = [0_u8; MAX_DATA_SIZE];
+
+    loop {
+        if let Some(IncomingDatagram::Packet { source, bytes, .. }) = io.poll_recv()? {
+            let packet = decode_packet(bytes)?;
+
+            // The rejected transmission must not
+            // have consumed packet number 1.
+            assert_eq!(packet.header.packet_number, 1);
+
+            assert_eq!(
+                client.receive(source, bytes, &mut output,)?,
+                ReceiveEvent::Data(6)
+            );
+
+            assert_eq!(&output[..6], b"LEStra");
+
+            break;
+        }
+
+        assert!(Instant::now() < deadline, "DATA receive timeout");
+
+        thread::sleep(Duration::from_millis(1));
+    }
+
+    assert_eq!(server.established_len(), 1);
+
+    // CLOSE is not blocked by the DATA budget.
+    server.send_close(cid)?;
+
+    assert_eq!(server.established_len(), 0);
+
+    Ok(())
+}
+
+#[test]
+fn global_pacing_limits_combined_session_traffic() -> TestResult {
+    let (client_key, server_key) = keys()?;
+
+    let server_private = key32(&server_key.private);
+
+    let config = ServerConfig {
+        pacing: DataPacingConfig {
+            per_session: PacingLimit {
+                bytes_per_second: 0,
+                burst_bytes: 1200,
+            },
+
+            global: PacingLimit {
+                bytes_per_second: 0,
+                burst_bytes: 48,
+            },
+        },
+
+        ..ServerConfig::default()
+    };
+
+    let mut server = UdpServer::new(
+        UdpIo::bind(address())?,
+        config,
+        &server_private,
+        key32(&client_key.public),
+    );
+
+    let (_first_io, first) = establish(&mut server, &client_key, &server_key, [1; 8])?;
+
+    let (_second_io, second) = establish(&mut server, &client_key, &server_key, [2; 8])?;
+
+    let first_cid = first.remote_receive_cid();
+    let second_cid = second.remote_receive_cid();
+
+    server.send_data(first_cid, b"LEStra")?;
+
+    let error = server
+        .send_data(second_cid, b"LEStra")
+        .expect_err("global budget is exhausted");
+
+    assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+
+    assert_eq!(server.established_len(), 2);
 
     Ok(())
 }

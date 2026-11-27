@@ -2,16 +2,19 @@
 //!
 //! Provides non-blocking UDP I/O, client handshake scheduling,
 //! server-side session routing, bounded INITIAL admission,
-//! amplification accounting and secure datagram exchange.
+//! amplification accounting, session expiration, secure
+//! datagram exchange and server DATA rate limiting.
 //!
-//! Established session timeouts, multi-identity authorization,
-//! congestion response and production hardening remain incomplete.
+//! Client pacing, adaptive congestion control,
+//! multi-identity authorization and production hardening
+//! remain incomplete.
 
 mod admission;
 mod amplification;
 mod client;
 mod config;
 mod initial_cache;
+mod pacing;
 mod server;
 mod session_table;
 mod socket;
@@ -32,3 +35,5 @@ pub use session_table::{
 };
 
 pub use socket::{IncomingDatagram, UdpIo};
+
+pub use pacing::{DataPacingConfig, PacingLimit};

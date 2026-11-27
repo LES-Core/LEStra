@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use crate::AdmissionLimits;
+use crate::{AdmissionLimits, DataPacingConfig};
 
 /// Established session lifetime policy.
 ///
@@ -28,6 +28,7 @@ pub struct ServerConfig {
     pub max_initial_cache: usize,
     pub admission: AdmissionLimits,
     pub timeouts: SessionTimeouts,
+    pub pacing: DataPacingConfig,
 }
 
 impl Default for ServerConfig {
@@ -38,6 +39,7 @@ impl Default for ServerConfig {
             max_initial_cache: 8192,
             admission: AdmissionLimits::default(),
             timeouts: SessionTimeouts::default(),
+            pacing: DataPacingConfig::default(),
         }
     }
 }

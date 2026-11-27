@@ -9,8 +9,10 @@ use lestra_codec::{MAX_DATAGRAM_LEN, PacketType};
 use lestra_crypto::{INITIAL_SIZE, MAX_DATA_SIZE, READY_SIZE, RESPONSE_SIZE, ServerStart};
 
 use crate::{
-    AdmissionGate, ConnectionId, IncomingDatagram, RouteEvent, ServerConfig, SessionTable, UdpIo,
+    AdmissionGate, ConnectionId, IncomingDatagram, RouteEvent, ServerConfig, SessionTable,
+    SessionTableError, UdpIo,
     initial_cache::{InitialCache, InitialRecord, initial_key},
+    pacing::BytePacer,
     session_table::ExpirationReason,
 };
 
@@ -75,6 +77,7 @@ struct ServerState<'a> {
     initials: InitialCache,
 
     next_maintenance: Instant,
+    global_pacer: BytePacer,
 }
 
 impl ServerState<'_> {
@@ -277,10 +280,11 @@ impl<'a> UdpServer<'a> {
                 server_private,
                 allowed_client,
 
-                sessions: SessionTable::with_timeouts(
+                sessions: SessionTable::with_transport_limits(
                     config.max_sessions,
                     config.max_pending,
                     config.timeouts,
+                    config.pacing.per_session,
                 ),
 
                 admission: AdmissionGate::new(config.admission, now),
@@ -288,6 +292,8 @@ impl<'a> UdpServer<'a> {
                 initials: InitialCache::new(config.max_initial_cache),
 
                 next_maintenance: now,
+
+                global_pacer: BytePacer::new(config.pacing.global, now),
             },
         }
     }
@@ -391,16 +397,33 @@ impl<'a> UdpServer<'a> {
 
     /// Encrypt and submit an unreliable DATA datagram.
     ///
+    /// Returns WouldBlock if either transmission budget
+    /// is exhausted or the socket cannot accept the packet.
+    ///
+    /// A pacing rejection does not consume a packet number.
+    /// A failed socket send never rolls back its packet number.
+    ///
     /// Successful submission does not guarantee delivery.
-    /// A failed socket send does not roll back its nonce.
     pub fn send_data(&mut self, cid: ConnectionId, plaintext: &[u8]) -> io::Result<()> {
+        let now = Instant::now();
+
         let mut packet = [0_u8; MAX_DATAGRAM_LEN];
 
         let (destination, len) = self
             .state
             .sessions
-            .send_data(cid, plaintext, &mut packet)
-            .map_err(io::Error::other)?;
+            .send_data_paced(
+                now,
+                cid,
+                plaintext,
+                &mut packet,
+                &mut self.state.global_pacer,
+            )
+            .map_err(|error| match error {
+                SessionTableError::RateLimited => io::Error::new(io::ErrorKind::WouldBlock, error),
+
+                _ => io::Error::other(error),
+            })?;
 
         self.io.send_to(destination, &packet[..len])
     }

@@ -5,14 +5,16 @@ use std::{
     time::Instant,
 };
 
-use lestra_codec::{CodecError, PacketType, decode_packet};
+use lestra_codec::{AEAD_TAG_LEN, CodecError, HEADER_LEN, PacketType, decode_packet};
 
 use lestra_crypto::{
-    EstablishedSession, PacketProtectionError, READY_SIZE, ReceiveEvent, ServerAwaitingConfirm,
+    EstablishedSession, MAX_DATA_SIZE, PacketProtectionError, READY_SIZE, ReceiveEvent,
+    ServerAwaitingConfirm,
 };
 
 use crate::admission::normalize_ip;
 use crate::config::SessionTimeouts;
+use crate::pacing::{BytePacer, DataPacingConfig, PacingLimit};
 use crate::timer::HANDSHAKE_TIMEOUT;
 
 pub type ConnectionId = [u8; 8];
@@ -32,6 +34,7 @@ pub enum SessionTableError {
     ConnectionIdCollision,
     UnknownConnection,
     SessionExpired,
+    RateLimited,
 }
 
 impl fmt::Display for SessionTableError {
@@ -48,6 +51,7 @@ impl fmt::Display for SessionTableError {
             Self::ConnectionIdCollision => f.write_str("connection ID collision"),
             Self::UnknownConnection => f.write_str("unknown connection ID"),
             Self::SessionExpired => f.write_str("session lifetime has expired"),
+            Self::RateLimited => f.write_str("DATA transmission rate exceeded"),
         }
     }
 }
@@ -109,6 +113,7 @@ struct EstablishedEntry {
 
     created_at: Instant,
     last_activity: Instant,
+    pacer: BytePacer,
 }
 
 impl EstablishedEntry {
@@ -147,6 +152,7 @@ pub struct SessionTable {
     max_pending: usize,
 
     timeouts: SessionTimeouts,
+    data_pacing: PacingLimit,
 }
 
 impl SessionTable {
@@ -159,6 +165,20 @@ impl SessionTable {
         max_pending: usize,
         timeouts: SessionTimeouts,
     ) -> Self {
+        Self::with_transport_limits(
+            max_sessions,
+            max_pending,
+            timeouts,
+            DataPacingConfig::default().per_session,
+        )
+    }
+
+    pub(crate) fn with_transport_limits(
+        max_sessions: usize,
+        max_pending: usize,
+        timeouts: SessionTimeouts,
+        data_pacing: PacingLimit,
+    ) -> Self {
         Self {
             pending: HashMap::new(),
             established: HashMap::new(),
@@ -170,6 +190,7 @@ impl SessionTable {
             max_sessions,
             max_pending,
             timeouts,
+            data_pacing,
         }
     }
 
@@ -281,6 +302,7 @@ impl SessionTable {
                     confirmation_deadline: entry.deadline,
                     created_at: now,
                     last_activity: now,
+                    pacer: BytePacer::new(self.data_pacing, now),
                 },
             );
 
@@ -416,7 +438,52 @@ impl SessionTable {
         plaintext: &[u8],
         output: &mut [u8],
     ) -> Result<(SocketAddr, usize), SessionTableError> {
-        self.send_with(cid, |session| session.send_data(plaintext, output))
+        self.send_with(cid, Instant::now(), |session| {
+            session.send_data(plaintext, output)
+        })
+    }
+
+    /// Protect outgoing DATA after reserving both
+    /// per-session and global transmission credit.
+    ///
+    /// Rate-limit rejection does not consume a packet number
+    /// or modify the output buffer.
+    pub(crate) fn send_data_paced(
+        &mut self,
+        now: Instant,
+        cid: ConnectionId,
+        plaintext: &[u8],
+        output: &mut [u8],
+        global: &mut BytePacer,
+    ) -> Result<(SocketAddr, usize), SessionTableError> {
+        let entry = self
+            .established
+            .get_mut(&cid)
+            .ok_or(SessionTableError::UnknownConnection)?;
+
+        if entry.expiration_reason(now, self.timeouts).is_some() {
+            return Err(SessionTableError::SessionExpired);
+        }
+
+        if plaintext.len() > MAX_DATA_SIZE {
+            return Err(CodecError::Oversized.into());
+        }
+
+        let wire_len = HEADER_LEN + plaintext.len() + AEAD_TAG_LEN;
+
+        if output.len() < wire_len {
+            return Err(CodecError::OutputTooSmall {
+                required: wire_len,
+                available: output.len(),
+            }
+            .into());
+        }
+
+        if !entry.pacer.reserve_pair(global, now, wire_len) {
+            return Err(SessionTableError::RateLimited);
+        }
+
+        self.send_with(cid, now, |session| session.send_data(plaintext, output))
     }
 
     /// Generate CLOSE and retire the local session.
@@ -425,12 +492,13 @@ impl SessionTable {
         cid: ConnectionId,
         output: &mut [u8],
     ) -> Result<(SocketAddr, usize), SessionTableError> {
-        self.send_with(cid, |session| session.send_close(output))
+        self.send_with(cid, Instant::now(), |session| session.send_close(output))
     }
 
     fn send_with(
         &mut self,
         cid: ConnectionId,
+        now: Instant,
         send: impl FnOnce(&mut EstablishedSession) -> Result<usize, PacketProtectionError>,
     ) -> Result<(SocketAddr, usize), SessionTableError> {
         let entry = self
