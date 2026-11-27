@@ -279,6 +279,7 @@ dependencies = [
 name = "lestra-transport-udp"
 version = "0.1.0"
 dependencies = [
+ "getrandom 0.3.4",
  "lestra-codec",
  "lestra-crypto",
  "snow",

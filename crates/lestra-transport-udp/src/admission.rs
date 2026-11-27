@@ -144,6 +144,10 @@ impl AdmissionGate {
             return false;
         }
 
+        self.allow_source(now, source)
+    }
+
+    pub(crate) fn allow_source(&mut self, now: Instant, source: SocketAddr) -> bool {
         self.global.refill(now);
 
         if !self.global.has_token() {

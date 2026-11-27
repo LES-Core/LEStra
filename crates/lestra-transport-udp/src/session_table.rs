@@ -353,6 +353,10 @@ impl SessionTable {
             .count()
     }
 
+    pub fn is_pending(&self, cid: ConnectionId) -> bool {
+        self.pending.contains_key(&cid)
+    }
+
     /// Check global and per-IP pending capacity.
     pub fn has_pending_capacity_for_ip(&self, ip: IpAddr, limit: usize) -> bool {
         self.has_pending_capacity() && self.pending_for_ip(ip) < limit
