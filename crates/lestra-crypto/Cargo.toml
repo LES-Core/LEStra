@@ -1,6 +1,6 @@
 [package]
 name = "lestra-crypto"
-description = "Experimental, transport-independent Noise IK handshake for LEStra"
+description = "Transport-independent secure datagram sessions for LEStra"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

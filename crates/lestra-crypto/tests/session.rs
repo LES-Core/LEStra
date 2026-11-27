@@ -548,3 +548,65 @@ fn local_close_discards_handshake_recovery() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn authenticated_replay_window_enforces_exact_boundary() -> TestResult {
+    let (mut client, mut server) = established_pair()?;
+
+    let source = server.remote_endpoint();
+
+    let mut oldest = [0_u8; MAX_DATAGRAM_LEN];
+    let mut delayed = [0_u8; MAX_DATAGRAM_LEN];
+    let mut packet = [0_u8; MAX_DATAGRAM_LEN];
+    let mut plaintext = [0_u8; MAX_DATA_SIZE];
+
+    // Packet number 1.
+    let oldest_len = client.send_data(b"expired", &mut oldest)?;
+
+    // Packet number 2.
+    let delayed_len = client.send_data(b"delayed", &mut delayed)?;
+
+    // Generate packet numbers 3 through 1024.
+    // Simulate loss by not delivering them.
+    for _ in 3..1025 {
+        client.send_data(b"lost", &mut packet)?;
+    }
+
+    // Packet number 1025.
+    let len = client.send_data(b"latest", &mut packet)?;
+
+    assert_eq!(decode_packet(&packet[..len])?.header.packet_number, 1025);
+
+    assert_eq!(
+        server.receive(source, &packet[..len], &mut plaintext,)?,
+        ReceiveEvent::Data(6)
+    );
+
+    // Distance 1024: expired.
+    plaintext.fill(0xAA);
+
+    assert!(matches!(
+        server.receive(source, &oldest[..oldest_len], &mut plaintext,),
+        Err(PacketProtectionError::ReplayRejected)
+    ));
+
+    assert_eq!(plaintext, [0xAA; MAX_DATA_SIZE]);
+
+    // Distance 1023: still within the window.
+    assert_eq!(
+        server.receive(source, &delayed[..delayed_len], &mut plaintext,)?,
+        ReceiveEvent::Data(7)
+    );
+
+    assert_eq!(&plaintext[..7], b"delayed");
+
+    // The accepted delayed packet cannot be replayed.
+    assert!(matches!(
+        server.receive(source, &delayed[..delayed_len], &mut plaintext,),
+        Err(PacketProtectionError::ReplayRejected)
+    ));
+
+    assert!(!server.is_closed());
+
+    Ok(())
+}

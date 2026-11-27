@@ -179,7 +179,6 @@ impl PacketProtection {
     ///
     /// Failed authentication never modifies the replay window.
     /// Plaintext is exposed only after successful replay commit.
-    #[allow(dead_code, reason = "RX state machine integration is pending")]
     pub(super) fn open(
         &mut self,
         source: SocketAddr,
