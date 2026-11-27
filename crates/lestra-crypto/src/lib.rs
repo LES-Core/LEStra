@@ -17,7 +17,10 @@
 //! This crate is experimental and has not been independently audited.
 
 mod aead;
+mod profile;
 mod session;
+
+pub use profile::WireProfile;
 
 pub use aead::PacketProtectionError;
 pub use session::{ClientAwaitingReady, EstablishedSession, ReceiveEvent, ServerAwaitingConfirm};
@@ -26,12 +29,11 @@ use core::fmt;
 use std::net::SocketAddr;
 
 use lestra_codec::{
-    AEAD_TAG_LEN, CodecError, HEADER_LEN, PacketHeader, PacketType, decode_packet, encode_header,
-    encode_packet_into,
+    AEAD_TAG_LEN, CodecError, HEADER_LEN,
+    v2::{PacketHeader, PacketType},
 };
 use snow::{Builder, HandshakeState, params::NoiseParams};
 
-const PROLOGUE: &[u8] = b"LEStra/native-udp/v1";
 const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
 pub const INITIAL_SIZE: usize = 156;
 pub const RESPONSE_SIZE: usize = 108;
@@ -104,6 +106,7 @@ pub struct ClientStart {
     noise: HandshakeState,
     client_receive_cid: [u8; 8],
     expected_server_endpoint: SocketAddr,
+    profile: WireProfile,
 }
 
 /// Awaiting the encrypted Noise HANDSHAKE. The INITIAL bytes are immutable and
@@ -113,6 +116,7 @@ pub struct ClientPending {
     client_receive_cid: [u8; 8],
     expected_server_endpoint: SocketAddr,
     initial: [u8; INITIAL_SIZE],
+    profile: WireProfile,
 }
 
 /// Server with its own key and an explicitly approved client static key.
@@ -121,6 +125,7 @@ pub struct ServerStart {
     noise: HandshakeState,
     allowed_client_static: [u8; 32],
     server_receive_cid: [u8; 8],
+    profile: WireProfile,
 }
 
 /// A verified Noise IK transcript, **not** an established LEStra session.
@@ -131,6 +136,7 @@ pub struct VerifiedNoise {
     local_receive_cid: [u8; 8],
     remote_receive_cid: [u8; 8],
     remote_endpoint: SocketAddr,
+    profile: WireProfile,
 }
 
 impl VerifiedNoise {
@@ -152,6 +158,10 @@ impl VerifiedNoise {
 
     pub fn noise_complete(&self) -> bool {
         self.noise.is_handshake_finished()
+    }
+
+    pub fn profile(&self) -> WireProfile {
+        self.profile
     }
 }
 
@@ -179,13 +189,32 @@ impl ClientStart {
         client_receive_cid: [u8; 8],
         expected_server_endpoint: SocketAddr,
     ) -> Result<Self, HandshakeError> {
+        Self::new_with_profile(
+            WireProfile::V1,
+            client_static_private,
+            pinned_server_static,
+            client_receive_cid,
+            expected_server_endpoint,
+        )
+    }
+
+    pub fn new_with_profile(
+        profile: WireProfile,
+        client_static_private: &[u8; 32],
+        pinned_server_static: &[u8; 32],
+        client_receive_cid: [u8; 8],
+        expected_server_endpoint: SocketAddr,
+    ) -> Result<Self, HandshakeError> {
         valid_cid(client_receive_cid)?;
+
         let noise = Builder::new(params())
             .local_private_key(client_static_private)?
             .remote_public_key(pinned_server_static)?
-            .prologue(PROLOGUE)?
+            .prologue(profile.prologue())?
             .build_initiator()?;
+
         Ok(Self {
+            profile,
             noise,
             client_receive_cid,
             expected_server_endpoint,
@@ -200,7 +229,8 @@ impl ClientStart {
             packet_number: 0,
         };
         let mut raw_header = [0_u8; 26];
-        encode_header(header, INITIAL_BODY_SIZE, &mut raw_header)?;
+        self.profile
+            .encode_header(header, INITIAL_BODY_SIZE, &mut raw_header)?;
         let mut plaintext = [0_u8; ECHO_SIZE];
         plaintext[..26].copy_from_slice(&raw_header);
         plaintext[26..].copy_from_slice(&self.client_receive_cid);
@@ -211,12 +241,15 @@ impl ClientStart {
             return Err(HandshakeError::InvalidHandshakePayload);
         }
         let mut initial = [0_u8; INITIAL_SIZE];
-        let _ = encode_packet_into(header, &message, &mut initial)?;
+        let _ = self
+            .profile
+            .encode_packet_into(header, &message, &mut initial)?;
         Ok(ClientPending {
             noise: self.noise,
             client_receive_cid: self.client_receive_cid,
             expected_server_endpoint: self.expected_server_endpoint,
             initial,
+            profile: self.profile,
         })
     }
 }
@@ -236,7 +269,7 @@ impl ClientPending {
         if source != self.expected_server_endpoint {
             return Err(HandshakeError::UnexpectedPeer);
         }
-        let packet = decode_packet(bytes)?;
+        let packet = self.profile.decode_packet(bytes)?;
         if packet.header.kind != PacketType::Handshake
             || packet.header.destination_connection_id != self.client_receive_cid
         {
@@ -262,6 +295,7 @@ impl ClientPending {
             local_receive_cid: self.client_receive_cid,
             remote_receive_cid: server_receive_cid,
             remote_endpoint: source,
+            profile: self.profile,
         })
     }
 }
@@ -272,12 +306,29 @@ impl ServerStart {
         allowed_client_static: [u8; 32],
         server_receive_cid: [u8; 8],
     ) -> Result<Self, HandshakeError> {
+        Self::new_with_profile(
+            WireProfile::V1,
+            server_static_private,
+            allowed_client_static,
+            server_receive_cid,
+        )
+    }
+
+    pub fn new_with_profile(
+        profile: WireProfile,
+        server_static_private: &[u8; 32],
+        allowed_client_static: [u8; 32],
+        server_receive_cid: [u8; 8],
+    ) -> Result<Self, HandshakeError> {
         valid_cid(server_receive_cid)?;
+
         let noise = Builder::new(params())
             .local_private_key(server_static_private)?
-            .prologue(PROLOGUE)?
+            .prologue(profile.prologue())?
             .build_responder()?;
+
         Ok(Self {
+            profile,
             noise,
             allowed_client_static,
             server_receive_cid,
@@ -292,7 +343,7 @@ impl ServerStart {
         source: SocketAddr,
         bytes: &[u8],
     ) -> Result<ServerPendingConfirmation, HandshakeError> {
-        let packet = decode_packet(bytes)?;
+        let packet = self.profile.decode_packet(bytes)?;
         if packet.header.kind != PacketType::Initial {
             return Err(HandshakeError::UnexpectedPacket);
         }
@@ -321,7 +372,8 @@ impl ServerStart {
             packet_number: 0,
         };
         let mut raw_header = [0_u8; 26];
-        encode_header(header, RESPONSE_BODY_SIZE, &mut raw_header)?;
+        self.profile
+            .encode_header(header, RESPONSE_BODY_SIZE, &mut raw_header)?;
         let mut response_plaintext = [0_u8; ECHO_SIZE];
         response_plaintext[..26].copy_from_slice(&raw_header);
         response_plaintext[26..].copy_from_slice(&self.server_receive_cid);
@@ -334,7 +386,9 @@ impl ServerStart {
             return Err(HandshakeError::IncompleteNoiseHandshake);
         }
         let mut response = [0_u8; RESPONSE_SIZE];
-        let _ = encode_packet_into(header, &message, &mut response)?;
+        let _ = self
+            .profile
+            .encode_packet_into(header, &message, &mut response)?;
 
         Ok(ServerPendingConfirmation {
             response,
@@ -343,6 +397,7 @@ impl ServerStart {
                 local_receive_cid: self.server_receive_cid,
                 remote_receive_cid: client_receive_cid,
                 remote_endpoint: source,
+                profile: self.profile,
             },
         })
     }

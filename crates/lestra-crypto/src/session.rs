@@ -1,10 +1,10 @@
 use std::net::SocketAddr;
 
-use lestra_codec::{PacketType, decode_packet};
+use lestra_codec::v2::{ACK_PLAINTEXT_LEN, AckFrame, PacketType};
 
 use crate::{
     CONFIRM_SIZE, PacketProtectionError, READY_SIZE, RESPONSE_SIZE, ServerPendingConfirmation,
-    VerifiedNoise, aead::PacketProtection,
+    VerifiedNoise, WireProfile, aead::PacketProtection,
 };
 
 const MAX_READY_RETRIES: u8 = 5;
@@ -54,6 +54,7 @@ pub struct EstablishedSession {
     local_receive_cid: [u8; 8],
     remote_receive_cid: [u8; 8],
     remote_endpoint: SocketAddr,
+    profile: WireProfile,
 }
 
 impl VerifiedNoise {
@@ -88,6 +89,10 @@ impl ClientAwaitingReady {
 
     pub fn remote_endpoint(&self) -> SocketAddr {
         self.protection.remote_endpoint
+    }
+
+    pub fn profile(&self) -> WireProfile {
+        self.protection.profile
     }
 
     /// Authenticate READY without destroying the pending state
@@ -144,6 +149,10 @@ impl ServerAwaitingConfirm {
         self.protection.remote_endpoint
     }
 
+    pub fn profile(&self) -> WireProfile {
+        self.protection.profile
+    }
+
     /// Authenticate CONFIRM and generate READY exactly once.
     ///
     /// Invalid incoming packets do not destroy this state.
@@ -182,6 +191,10 @@ impl ServerAwaitingConfirm {
     pub fn into_established(
         self,
     ) -> Result<(EstablishedSession, [u8; READY_SIZE]), PacketProtectionError> {
+        if self.protection.profile == WireProfile::V2 {
+            return Err(PacketProtectionError::ReadySubmissionRequired);
+        }
+
         let confirmation = self
             .confirmation
             .ok_or(PacketProtectionError::ConfirmationRequired)?;
@@ -193,11 +206,34 @@ impl ServerAwaitingConfirm {
             ready,
         ))
     }
+
+    /// Return the cached READY after authenticating CONFIRM.
+    pub fn ready(&self) -> Option<&[u8; READY_SIZE]> {
+        self.confirmation
+            .as_ref()
+            .map(|confirmation| &confirmation.ready)
+    }
+
+    /// Establish after the caller has successfully
+    /// submitted the cached READY to its transport.
+    ///
+    /// The caller is responsible for performing the actual
+    /// socket submission before invoking this method.
+    pub fn into_established_after_ready_sent(
+        self,
+    ) -> Result<EstablishedSession, PacketProtectionError> {
+        let confirmation = self
+            .confirmation
+            .ok_or(PacketProtectionError::ConfirmationRequired)?;
+
+        Ok(EstablishedSession::new(self.protection, Some(confirmation)))
+    }
 }
 
 impl EstablishedSession {
     fn new(protection: PacketProtection, confirmation: Option<ServerConfirmationCache>) -> Self {
         Self {
+            profile: protection.profile,
             local_receive_cid: protection.local_receive_cid,
             remote_receive_cid: protection.remote_receive_cid,
             remote_endpoint: protection.remote_endpoint,
@@ -221,6 +257,10 @@ impl EstablishedSession {
     /// Whether this session has been permanently closed.
     pub fn is_closed(&self) -> bool {
         self.protection.is_none()
+    }
+
+    pub fn profile(&self) -> WireProfile {
+        self.profile
     }
 
     /// Permanently close the local session without sending a packet.
@@ -279,6 +319,69 @@ impl EstablishedSession {
         result
     }
 
+    /// Protect a canonical congestion feedback frame.
+    ///
+    /// ACK is supported only by the experimental v2 profile.
+    /// Every new ACK consumes a fresh directional packet number.
+    pub fn send_ack(
+        &mut self,
+        ack: &AckFrame,
+        output: &mut [u8],
+    ) -> Result<usize, PacketProtectionError> {
+        if self.is_closed() {
+            return Err(PacketProtectionError::SessionClosed);
+        }
+
+        if !self.profile.supports_ack() {
+            return Err(PacketProtectionError::UnexpectedPacket);
+        }
+
+        let plaintext = ack.encode();
+
+        self.send_packet(PacketType::Ack, &plaintext, output)
+    }
+
+    /// Authenticate and decode one congestion feedback packet.
+    ///
+    /// This method does not update congestion control,
+    /// sender history or application session activity.
+    pub fn receive_ack(
+        &mut self,
+        source: SocketAddr,
+        bytes: &[u8],
+    ) -> Result<AckFrame, PacketProtectionError> {
+        if self.is_closed() {
+            return Err(PacketProtectionError::SessionClosed);
+        }
+
+        if !self.profile.supports_ack() {
+            return Err(PacketProtectionError::UnexpectedPacket);
+        }
+
+        let mut plaintext = [0_u8; ACK_PLAINTEXT_LEN];
+
+        let protection = self
+            .protection
+            .as_mut()
+            .ok_or(PacketProtectionError::SessionClosed)?;
+
+        let result = protection.open(source, PacketType::Ack, bytes, &mut plaintext);
+
+        match result {
+            Ok(len) => {
+                AckFrame::decode(&plaintext[..len]).map_err(PacketProtectionError::InvalidAck)
+            }
+
+            Err(error) => {
+                if matches!(&error, PacketProtectionError::InvalidCiphertextLength) {
+                    self.close_local();
+                }
+
+                Err(error)
+            }
+        }
+    }
+
     /// Authenticate and receive an application or CLOSE packet.
     ///
     /// Invalid packets do not expose plaintext or close the session.
@@ -294,7 +397,7 @@ impl EstablishedSession {
             .as_mut()
             .ok_or(PacketProtectionError::SessionClosed)?;
 
-        let kind = decode_packet(bytes)?.header.kind;
+        let kind = self.profile.decode_packet(bytes)?.header.kind;
 
         let result = match kind {
             PacketType::Data => protection

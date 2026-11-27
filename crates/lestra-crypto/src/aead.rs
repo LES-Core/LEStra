@@ -2,13 +2,13 @@ use core::fmt;
 use std::net::SocketAddr;
 
 use lestra_codec::{
-    AEAD_TAG_LEN, CodecError, HEADER_LEN, MAX_PACKET_NUMBER_EXCLUSIVE, PacketHeader, PacketType,
-    decode_packet, encode_header,
+    AEAD_TAG_LEN, CodecError, HEADER_LEN, MAX_PACKET_NUMBER_EXCLUSIVE,
+    v2::{AckError, PacketHeader, PacketType},
 };
 use lestra_core::ReplayWindow;
 use snow::StatelessTransportState;
 
-use super::VerifiedNoise;
+use super::{VerifiedNoise, WireProfile};
 
 const MAX_PLAINTEXT_LEN: usize = crate::MAX_DATA_SIZE;
 
@@ -24,6 +24,8 @@ pub enum PacketProtectionError {
     InvalidCiphertextLength,
     InvalidConnectionId,
     SessionClosed,
+    InvalidAck(AckError),
+    ReadySubmissionRequired,
 }
 
 impl fmt::Display for PacketProtectionError {
@@ -39,6 +41,10 @@ impl fmt::Display for PacketProtectionError {
             Self::InvalidConnectionId => f.write_str("unexpected destination connection ID"),
             Self::InvalidCiphertextLength => f.write_str("unexpected ciphertext length"),
             Self::SessionClosed => f.write_str("session is closed"),
+            Self::InvalidAck(error) => write!(f, "invalid ACK frame: {error}"),
+            Self::ReadySubmissionRequired => {
+                f.write_str("READY must be submitted before establishment")
+            }
         }
     }
 }
@@ -70,6 +76,7 @@ pub(super) struct PacketProtection {
     pub(super) local_receive_cid: [u8; 8],
     pub(super) remote_receive_cid: [u8; 8],
     pub(super) remote_endpoint: SocketAddr,
+    pub(super) profile: WireProfile,
 }
 
 impl PacketProtection {
@@ -81,6 +88,7 @@ impl PacketProtection {
             local_receive_cid: verified.local_receive_cid,
             remote_receive_cid: verified.remote_receive_cid,
             remote_endpoint: verified.remote_endpoint,
+            profile: verified.profile,
         })
     }
 
@@ -112,7 +120,13 @@ impl PacketProtection {
                 kind == PacketType::Ready
             }
         } else {
-            matches!(kind, PacketType::Data | PacketType::Close)
+            match kind {
+                PacketType::Data | PacketType::Close => true,
+
+                PacketType::Ack => self.profile.supports_ack(),
+
+                _ => false,
+            }
         };
 
         if !allowed {
@@ -134,7 +148,8 @@ impl PacketProtection {
         };
 
         let mut raw_header = [0_u8; HEADER_LEN];
-        encode_header(header, body_len, &mut raw_header)?;
+        self.profile
+            .encode_header(header, body_len, &mut raw_header)?;
 
         if output.len() < required {
             return Err(CodecError::OutputTooSmall {
@@ -186,7 +201,7 @@ impl PacketProtection {
         bytes: &[u8],
         output: &mut [u8],
     ) -> Result<usize, PacketProtectionError> {
-        let packet = decode_packet(bytes)?;
+        let packet = self.profile.decode_packet(bytes)?;
 
         if source != self.remote_endpoint {
             return Err(PacketProtectionError::UnexpectedPeer);
@@ -202,9 +217,12 @@ impl PacketProtection {
 
         let allowed = match packet.header.kind {
             PacketType::Confirm => !self.noise.is_initiator(),
+
             PacketType::Ready => self.noise.is_initiator(),
 
             PacketType::Data | PacketType::Close => self.replay.highest().is_some(),
+
+            PacketType::Ack => self.profile.supports_ack() && self.replay.highest().is_some(),
 
             PacketType::Initial | PacketType::Handshake => false,
         };
@@ -262,6 +280,10 @@ mod tests {
     use snow::{Builder, params::NoiseParams};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn decode_packet(bytes: &[u8]) -> Result<lestra_codec::v2::DecodedPacket<'_>, CodecError> {
+        WireProfile::V1.decode_packet(bytes)
+    }
 
     fn verified_pair() -> Result<(VerifiedNoise, VerifiedNoise), Box<dyn std::error::Error>> {
         let params: NoiseParams = "Noise_IK_25519_ChaChaPoly_SHA256".parse()?;
@@ -697,6 +719,82 @@ mod tests {
 
         assert_eq!(&output[..written], b"LEStra");
         assert_eq!(server.replay.highest(), Some(1));
+
+        Ok(())
+    }
+
+    #[test]
+    fn authenticated_invalid_ack_is_rejected() -> TestResult {
+        use lestra_codec::v2::{ACK_PACKET_LEN, ACK_PLAINTEXT_LEN, AckError};
+
+        let params: NoiseParams = "Noise_IK_25519_ChaChaPoly_SHA256".parse()?;
+
+        let builder = Builder::new(params);
+
+        let client_key = builder.generate_keypair()?;
+        let server_key = builder.generate_keypair()?;
+
+        let client_private: [u8; 32] = client_key.private.as_slice().try_into()?;
+
+        let client_public: [u8; 32] = client_key.public.as_slice().try_into()?;
+
+        let server_private: [u8; 32] = server_key.private.as_slice().try_into()?;
+
+        let server_public: [u8; 32] = server_key.public.as_slice().try_into()?;
+
+        let client_addr = SocketAddr::from(([127, 0, 0, 1], 4000));
+
+        let server_addr = SocketAddr::from(([127, 0, 0, 1], 5000));
+
+        let client = ClientStart::new_with_profile(
+            WireProfile::V2,
+            &client_private,
+            &server_public,
+            [1; 8],
+            server_addr,
+        )?
+        .start()?;
+
+        let server =
+            ServerStart::new_with_profile(WireProfile::V2, &server_private, client_public, [2; 8])?
+                .accept_initial(client_addr, client.initial())?;
+
+        let client = client.accept_response(server_addr, server.response())?;
+
+        let mut client = PacketProtection::from_verified(client)?;
+
+        let mut server = server.await_confirmation()?;
+
+        let mut confirm = [0_u8; CONFIRM_SIZE];
+
+        client.seal(PacketType::Confirm, &[], &mut confirm)?;
+
+        server.accept_confirm(client_addr, &confirm)?;
+
+        // Crypto-only test: simulate READY submission.
+        let mut server = server.into_established_after_ready_sent()?;
+
+        // Invalid largest_acked = 0.
+        let invalid = [0_u8; ACK_PLAINTEXT_LEN];
+
+        let mut packet = [0_u8; ACK_PACKET_LEN];
+
+        // Test-only direct access to the private encryption layer.
+        client.seal(PacketType::Ack, &invalid, &mut packet)?;
+
+        assert!(matches!(
+            server.receive_ack(client_addr, &packet,),
+            Err(PacketProtectionError::InvalidAck(AckError::InvalidLargest))
+        ));
+
+        assert!(!server.is_closed());
+
+        // Authentication succeeded, so the PN was committed
+        // even though the ACK plaintext was semantically invalid.
+        assert!(matches!(
+            server.receive_ack(client_addr, &packet,),
+            Err(PacketProtectionError::ReplayRejected)
+        ));
 
         Ok(())
     }
