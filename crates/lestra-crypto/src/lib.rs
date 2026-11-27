@@ -1,11 +1,11 @@
-//! Experimental Noise IK and packet protection for LEStra native UDP.
+//! Experimental secure session establishment for LEStra native UDP.
 //!
-//! Implements authenticated Noise IK handshakes and initiator CONFIRM
-//! packet protection with explicit header associated data.
+//! Implements Noise IK, explicit header associated data,
+//! directional packet counters, receive replay protection,
+//! and authenticated CONFIRM/READY session establishment.
 //!
-//! A completed Noise handshake is NOT an established LEStra session.
-//! READY verification, replay protection, application data delivery,
-//! retransmission scheduling and resource limits remain unimplemented.
+//! Application DATA and CLOSE APIs, transport scheduling,
+//! admission control and resource limits remain unimplemented.
 //!
 //! Traffic keys remain inside Snow's directional cipher states.
 //! Raw Split key export is intentionally disabled.
@@ -13,10 +13,10 @@
 //! This crate is experimental and has not been independently audited.
 
 mod aead;
+mod session;
 
 pub use aead::PacketProtectionError;
-
-use aead::PacketProtection;
+pub use session::{ClientAwaitingReady, EstablishedSession, ServerAwaitingConfirm};
 
 use core::fmt;
 use std::net::SocketAddr;
@@ -32,6 +32,7 @@ const PATTERN: &str = "Noise_IK_25519_ChaChaPoly_SHA256";
 pub const INITIAL_SIZE: usize = 156;
 pub const RESPONSE_SIZE: usize = 108;
 pub const CONFIRM_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
+pub const READY_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
 const INITIAL_BODY_SIZE: usize = 130;
 const RESPONSE_BODY_SIZE: usize = 82;
 const ECHO_SIZE: usize = 34;
@@ -145,48 +146,6 @@ impl VerifiedNoise {
 
     pub fn noise_complete(&self) -> bool {
         self.noise.is_handshake_finished()
-    }
-
-    /// Consume the verified initiator handshake and generate CONFIRM.
-    ///
-    /// This does not establish a LEStra session.
-    pub fn start_confirmation(self) -> Result<ClientAwaitingReady, PacketProtectionError> {
-        let mut protection = PacketProtection::from_verified(self)?;
-        let mut confirm = [0_u8; CONFIRM_SIZE];
-
-        protection.seal(PacketType::Confirm, &[], &mut confirm)?;
-
-        Ok(ClientAwaitingReady {
-            protection,
-            confirm,
-        })
-    }
-}
-
-/// Client after generating CONFIRM but before authenticating READY.
-///
-/// Application data must not be sent or delivered in this state.
-pub struct ClientAwaitingReady {
-    protection: PacketProtection,
-    confirm: [u8; CONFIRM_SIZE],
-}
-
-impl ClientAwaitingReady {
-    /// Returns the immutable CONFIRM packet for transmission or retry.
-    pub fn confirm(&self) -> &[u8; CONFIRM_SIZE] {
-        &self.confirm
-    }
-
-    pub fn local_receive_cid(&self) -> [u8; 8] {
-        self.protection.local_receive_cid
-    }
-
-    pub fn remote_receive_cid(&self) -> [u8; 8] {
-        self.protection.remote_receive_cid
-    }
-
-    pub fn remote_endpoint(&self) -> SocketAddr {
-        self.protection.remote_endpoint
     }
 }
 

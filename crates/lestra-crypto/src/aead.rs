@@ -17,6 +17,7 @@ pub enum PacketProtectionError {
     Codec(CodecError),
     Noise(snow::Error),
     CounterExhausted,
+    ConfirmationRequired,
     ReplayRejected,
     UnexpectedPacket,
     UnexpectedPeer,
@@ -30,6 +31,7 @@ impl fmt::Display for PacketProtectionError {
             Self::Codec(err) => write!(f, "invalid packet: {err}"),
             Self::Noise(_) => f.write_str("packet protection failed"),
             Self::CounterExhausted => f.write_str("send state exhausted; reconnect required"),
+            Self::ConfirmationRequired => f.write_str("authenticated confirmation is required"),
             Self::ReplayRejected => f.write_str("duplicate or expired packet number"),
             Self::UnexpectedPacket => f.write_str("unexpected protected packet type"),
             Self::UnexpectedPeer => f.write_str("unexpected remote endpoint"),
@@ -61,7 +63,6 @@ pub(super) struct PacketProtection {
     noise: StatelessTransportState,
     next_send: u64,
 
-    #[allow(dead_code, reason = "RX state machine integration is pending")]
     replay: ReplayWindow,
 
     pub(super) local_receive_cid: [u8; 8],
