@@ -220,6 +220,13 @@ impl SessionTable {
         self.len() < self.max_sessions && self.pending_len() < self.max_pending
     }
 
+    /// Check whether a session can still transmit DATA.
+    pub(crate) fn can_send_at(&self, cid: ConnectionId, now: Instant) -> bool {
+        self.established.get(&cid).is_some_and(|entry| {
+            !entry.session.is_closed() && entry.expiration_reason(now, self.timeouts).is_none()
+        })
+    }
+
     /// Insert a previously admitted Noise handshake.
     ///
     /// The caller must enforce admission and authorization

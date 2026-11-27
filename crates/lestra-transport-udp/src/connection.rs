@@ -6,6 +6,7 @@ use lestra_crypto::{
     CLOSE_SIZE, EstablishedSession, MAX_DATA_SIZE, PacketProtectionError, ReceiveEvent,
 };
 
+use crate::send_queue::{FlushStatus, PendingDatagram, SendQueue};
 use crate::{
     ClientConfig, ConnectionId, ExpirationReason, IncomingDatagram, SessionTimeouts, UdpIo,
     pacing::BytePacer,
@@ -51,6 +52,7 @@ pub struct UdpConnection {
     last_activity: Instant,
 
     close_reason: Option<ConnectionCloseReason>,
+    send_queue: SendQueue,
 }
 
 impl UdpConnection {
@@ -72,6 +74,7 @@ impl UdpConnection {
             last_activity: established_at,
 
             close_reason: None,
+            send_queue: SendQueue::default(),
         }
     }
 
@@ -101,8 +104,8 @@ impl UdpConnection {
 
     fn finish(&mut self, reason: ConnectionCloseReason) {
         self.session.close_local();
+        self.send_queue.clear();
 
-        // Preserve the original terminal reason.
         if self.close_reason.is_none() {
             self.close_reason = Some(reason);
         }
@@ -156,8 +159,11 @@ impl UdpConnection {
 
     /// Encrypt and submit an unreliable DATA datagram.
     ///
-    /// Pacing rejection does not consume a packet number.
-    /// Socket errors never roll back an assigned nonce.
+    /// Success means that the packet was either submitted
+    /// to the socket or retained in the bounded send queue.
+    ///
+    /// WouldBlock means that this new datagram was not
+    /// accepted by the connection.
     pub fn send_data(&mut self, plaintext: &[u8]) -> io::Result<()> {
         let now = Instant::now();
 
@@ -167,6 +173,17 @@ impl UdpConnection {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "application datagram is oversized",
+            ));
+        }
+
+        self.send_queue.discard_expired(now);
+
+        // Check capacity before consuming pacing credit
+        // or assigning a new packet number.
+        if self.send_queue.is_pending() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "DATA send queue is full",
             ));
         }
 
@@ -187,7 +204,23 @@ impl UdpConnection {
 
         let len = result.map_err(io::Error::other)?;
 
-        self.io.send_to(self.remote_endpoint(), &packet[..len])
+        let destination = self.remote_endpoint();
+
+        // The final valid packet number may retire
+        // the cryptographic session.
+        //
+        // Such a packet may be submitted immediately,
+        // but must not be queued after retirement.
+        if self.is_closed() {
+            return self.io.send_to(destination, &packet[..len]);
+        }
+
+        let pending = PendingDatagram::new(self.local_receive_cid(), destination, packet, len, now);
+
+        let io = &self.io;
+
+        self.send_queue
+            .submit(pending, |destination, bytes| io.send_to(destination, bytes))
     }
 
     /// Process at most one incoming datagram.
@@ -211,6 +244,8 @@ impl UdpConnection {
         if let Some(reason) = self.close_reason {
             return Ok(ConnectionEvent::Closed { reason });
         }
+
+        self.poll_send_at(now)?;
 
         let incoming = match self.io.poll_recv() {
             Ok(incoming) => incoming,
@@ -273,6 +308,36 @@ impl UdpConnection {
                 Err(io::Error::other(error))
             }
         }
+    }
+
+    /// Whether an encrypted DATA packet is awaiting
+    /// socket transmission.
+    pub fn has_pending_data(&self) -> bool {
+        self.send_queue.is_pending()
+    }
+
+    /// Attempt one pending DATA transmission.
+    pub fn poll_send(&mut self) -> io::Result<FlushStatus> {
+        self.poll_send_at(Instant::now())
+    }
+
+    fn poll_send_at(&mut self, now: Instant) -> io::Result<FlushStatus> {
+        let had_pending = self.send_queue.is_pending();
+
+        self.check_expiration(now);
+
+        if self.is_closed() {
+            return Ok(if had_pending {
+                FlushStatus::Dropped
+            } else {
+                FlushStatus::Idle
+            });
+        }
+
+        let io = &self.io;
+
+        self.send_queue
+            .flush(now, |destination, bytes| io.send_to(destination, bytes))
     }
 
     /// Generate an authenticated CLOSE and retire

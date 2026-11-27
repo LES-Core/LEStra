@@ -8,6 +8,7 @@ use lestra_codec::{MAX_DATAGRAM_LEN, PacketType};
 
 use lestra_crypto::{INITIAL_SIZE, MAX_DATA_SIZE, READY_SIZE, RESPONSE_SIZE, ServerStart};
 
+use crate::send_queue::{FlushStatus, PendingDatagram, SendQueue};
 use crate::{
     AdmissionGate, ConnectionId, IncomingDatagram, RouteEvent, ServerConfig, SessionTable,
     SessionTableError, UdpIo,
@@ -263,6 +264,8 @@ impl ServerState<'_> {
 pub struct UdpServer<'a> {
     io: UdpIo,
     state: ServerState<'a>,
+
+    send_queue: SendQueue,
 }
 
 impl<'a> UdpServer<'a> {
@@ -295,6 +298,7 @@ impl<'a> UdpServer<'a> {
 
                 global_pacer: BytePacer::new(config.pacing.global, now),
             },
+            send_queue: SendQueue::default(),
         }
     }
 
@@ -318,8 +322,12 @@ impl<'a> UdpServer<'a> {
         self.state.maintenance(now);
 
         if let Some((cid, reason)) = self.state.sessions.pop_expired(now) {
+            self.send_queue.discard_for(cid);
+
             return Ok(ServerEvent::Expired { cid, reason });
         }
+
+        self.poll_send_at(now)?;
 
         let action = match self.io.poll_recv() {
             Ok(Some(IncomingDatagram::Packet {
@@ -348,9 +356,55 @@ impl<'a> UdpServer<'a> {
         self.execute(action)
     }
 
+    pub fn has_pending_data(&self) -> bool {
+        self.send_queue.is_pending()
+    }
+
+    fn discard_invalid_pending(&mut self, now: Instant) -> bool {
+        if self.send_queue.discard_expired(now) {
+            return true;
+        }
+
+        if let Some(cid) = self.send_queue.owner() {
+            if !self.state.sessions.can_send_at(cid, now) {
+                self.send_queue.clear();
+
+                return true;
+            }
+        }
+
+        false
+    }
+
+    /// Attempt one pending server DATA transmission.
+    pub fn poll_send(&mut self) -> io::Result<FlushStatus> {
+        self.poll_send_at(Instant::now())
+    }
+
+    fn poll_send_at(&mut self, now: Instant) -> io::Result<FlushStatus> {
+        if self.discard_invalid_pending(now) {
+            return Ok(FlushStatus::Dropped);
+        }
+
+        let io = &self.io;
+
+        self.send_queue
+            .flush(now, |destination, bytes| io.send_to(destination, bytes))
+    }
+
     fn execute(&mut self, action: Action) -> io::Result<ServerEvent> {
         match action {
-            Action::Event(event) => Ok(event),
+            Action::Event(event) => {
+                match event {
+                    ServerEvent::Closed { cid } | ServerEvent::Expired { cid, .. } => {
+                        self.send_queue.discard_for(cid);
+                    }
+
+                    _ => {}
+                }
+
+                Ok(event)
+            }
 
             Action::Handshake { destination, bytes } => {
                 match self.io.send_to(destination, &bytes) {
@@ -397,15 +451,21 @@ impl<'a> UdpServer<'a> {
 
     /// Encrypt and submit an unreliable DATA datagram.
     ///
-    /// Returns WouldBlock if either transmission budget
-    /// is exhausted or the socket cannot accept the packet.
-    ///
-    /// A pacing rejection does not consume a packet number.
-    /// A failed socket send never rolls back its packet number.
-    ///
-    /// Successful submission does not guarantee delivery.
+    /// Success means submitted or retained in the bounded
+    /// ciphertext queue. DATA delivery is not guaranteed.
     pub fn send_data(&mut self, cid: ConnectionId, plaintext: &[u8]) -> io::Result<()> {
         let now = Instant::now();
+
+        self.discard_invalid_pending(now);
+
+        // Never consume a packet number when the
+        // shared socket queue is already occupied.
+        if self.send_queue.is_pending() {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "DATA send queue is full",
+            ));
+        }
 
         let mut packet = [0_u8; MAX_DATAGRAM_LEN];
 
@@ -425,7 +485,18 @@ impl<'a> UdpServer<'a> {
                 _ => io::Error::other(error),
             })?;
 
-        self.io.send_to(destination, &packet[..len])
+        // A final packet may have retired the session
+        // because of packet number exhaustion.
+        if !self.state.sessions.can_send_at(cid, now) {
+            return self.io.send_to(destination, &packet[..len]);
+        }
+
+        let pending = PendingDatagram::new(cid, destination, packet, len, now);
+
+        let io = &self.io;
+
+        self.send_queue
+            .submit(pending, |destination, bytes| io.send_to(destination, bytes))
     }
 
     /// Generate CLOSE and retire the local session.
@@ -441,11 +512,15 @@ impl<'a> UdpServer<'a> {
             .send_close(cid, &mut packet)
             .map_err(io::Error::other)?;
 
+        self.send_queue.discard_for(cid);
+
         self.io.send_to(destination, &packet[..len])
     }
 
     /// Retire a connection without sending CLOSE.
     pub fn disconnect(&mut self, cid: ConnectionId) -> bool {
+        self.send_queue.discard_for(cid);
+
         self.state.sessions.remove(cid)
     }
 }

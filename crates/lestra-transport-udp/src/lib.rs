@@ -15,6 +15,7 @@ mod config;
 mod connection;
 mod initial_cache;
 mod pacing;
+mod send_queue;
 mod server;
 mod session_table;
 mod socket;
@@ -37,5 +38,7 @@ pub use server::{ServerEvent, UdpServer};
 pub use session_table::{
     ConnectionId, ExpirationReason, RouteEvent, SessionTable, SessionTableError,
 };
+
+pub use send_queue::FlushStatus;
 
 pub use socket::{IncomingDatagram, UdpIo};
