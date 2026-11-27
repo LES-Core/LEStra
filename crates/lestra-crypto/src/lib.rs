@@ -1,11 +1,15 @@
-//! Experimental secure session establishment for LEStra native UDP.
+//! Experimental secure datagram sessions for LEStra native UDP.
 //!
 //! Implements Noise IK, explicit header associated data,
 //! directional packet counters, receive replay protection,
-//! and authenticated CONFIRM/READY session establishment.
+//! authenticated CONFIRM/READY session establishment,
+//! application DATA and authenticated CLOSE.
 //!
-//! Application DATA and CLOSE APIs, transport scheduling,
-//! admission control and resource limits remain unimplemented.
+//! Application datagrams are unreliable and unordered.
+//! The caller provides all network I/O and output buffers.
+//!
+//! Transport scheduling, admission control, congestion response
+//! and resource limits remain unimplemented.
 //!
 //! Traffic keys remain inside Snow's directional cipher states.
 //! Raw Split key export is intentionally disabled.
@@ -16,7 +20,7 @@ mod aead;
 mod session;
 
 pub use aead::PacketProtectionError;
-pub use session::{ClientAwaitingReady, EstablishedSession, ServerAwaitingConfirm};
+pub use session::{ClientAwaitingReady, EstablishedSession, ReceiveEvent, ServerAwaitingConfirm};
 
 use core::fmt;
 use std::net::SocketAddr;
@@ -33,6 +37,8 @@ pub const INITIAL_SIZE: usize = 156;
 pub const RESPONSE_SIZE: usize = 108;
 pub const CONFIRM_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
 pub const READY_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
+pub const CLOSE_SIZE: usize = HEADER_LEN + AEAD_TAG_LEN;
+pub const MAX_DATA_SIZE: usize = lestra_codec::MAX_DATAGRAM_LEN - HEADER_LEN - AEAD_TAG_LEN;
 const INITIAL_BODY_SIZE: usize = 130;
 const RESPONSE_BODY_SIZE: usize = 82;
 const ECHO_SIZE: usize = 34;

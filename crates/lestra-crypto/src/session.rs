@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use lestra_codec::PacketType;
+use lestra_codec::{PacketType, decode_packet};
 
 use crate::{
     CONFIRM_SIZE, PacketProtectionError, READY_SIZE, RESPONSE_SIZE, ServerPendingConfirmation,
@@ -30,12 +30,30 @@ struct ServerConfirmationCache {
     retries_remaining: u8,
 }
 
+/// Event produced by an authenticated incoming packet.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiveEvent {
+    /// Number of plaintext bytes written to the output buffer.
+    Data(usize),
+
+    /// The remote peer authenticated a CLOSE packet.
+    Closed,
+}
+
 /// Cryptographically established LEStra session.
 ///
-/// Application DATA and CLOSE APIs are not implemented yet.
+/// Application datagrams are unreliable and unordered.
+/// A successful send operation does not guarantee delivery.
+///
+/// Closing the session permanently discards its packet protection
+/// state and handshake recovery cache.
 pub struct EstablishedSession {
-    protection: PacketProtection,
+    protection: Option<PacketProtection>,
     confirmation: Option<ServerConfirmationCache>,
+
+    local_receive_cid: [u8; 8],
+    remote_receive_cid: [u8; 8],
+    remote_endpoint: SocketAddr,
 }
 
 impl VerifiedNoise {
@@ -93,10 +111,7 @@ impl ClientAwaitingReady {
             return Err(PacketProtectionError::ConfirmationRequired);
         }
 
-        Ok(EstablishedSession {
-            protection: self.protection,
-            confirmation: None,
-        })
+        Ok(EstablishedSession::new(self.protection, None))
     }
 }
 
@@ -174,26 +189,133 @@ impl ServerAwaitingConfirm {
         let ready = confirmation.ready;
 
         Ok((
-            EstablishedSession {
-                protection: self.protection,
-                confirmation: Some(confirmation),
-            },
+            EstablishedSession::new(self.protection, Some(confirmation)),
             ready,
         ))
     }
 }
 
 impl EstablishedSession {
+    fn new(protection: PacketProtection, confirmation: Option<ServerConfirmationCache>) -> Self {
+        Self {
+            local_receive_cid: protection.local_receive_cid,
+            remote_receive_cid: protection.remote_receive_cid,
+            remote_endpoint: protection.remote_endpoint,
+            protection: Some(protection),
+            confirmation,
+        }
+    }
+
     pub fn local_receive_cid(&self) -> [u8; 8] {
-        self.protection.local_receive_cid
+        self.local_receive_cid
     }
 
     pub fn remote_receive_cid(&self) -> [u8; 8] {
-        self.protection.remote_receive_cid
+        self.remote_receive_cid
     }
 
     pub fn remote_endpoint(&self) -> SocketAddr {
-        self.protection.remote_endpoint
+        self.remote_endpoint
+    }
+
+    /// Whether this session has been permanently closed.
+    pub fn is_closed(&self) -> bool {
+        self.protection.is_none()
+    }
+
+    /// Permanently close the local session without sending a packet.
+    ///
+    /// The remote peer must independently detect timeout or closure.
+    pub fn close_local(&mut self) {
+        self.protection = None;
+        self.confirmation = None;
+    }
+
+    /// Protect an unreliable application datagram.
+    ///
+    /// Returns the number of wire bytes written to `output`.
+    /// Packet numbers are assigned internally.
+    ///
+    /// This operation does not perform network I/O.
+    pub fn send_data(
+        &mut self,
+        plaintext: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, PacketProtectionError> {
+        self.send_packet(PacketType::Data, plaintext, output)
+    }
+
+    /// Generate an authenticated CLOSE and close locally.
+    ///
+    /// Successful generation permanently closes the session.
+    /// Delivery of CLOSE to the remote peer is not guaranteed.
+    pub fn send_close(&mut self, output: &mut [u8]) -> Result<usize, PacketProtectionError> {
+        self.send_packet(PacketType::Close, &[], output)
+    }
+
+    fn send_packet(
+        &mut self,
+        kind: PacketType,
+        plaintext: &[u8],
+        output: &mut [u8],
+    ) -> Result<usize, PacketProtectionError> {
+        let (result, exhausted) = {
+            let protection = self
+                .protection
+                .as_mut()
+                .ok_or(PacketProtectionError::SessionClosed)?;
+
+            let result = protection.seal(kind, plaintext, output);
+
+            (result, protection.send_exhausted())
+        };
+
+        // A successful CLOSE or exhausted sending state
+        // permanently retires the session.
+        if exhausted || (kind == PacketType::Close && result.is_ok()) {
+            self.close_local();
+        }
+
+        result
+    }
+
+    /// Authenticate and receive an application or CLOSE packet.
+    ///
+    /// Invalid packets do not expose plaintext or close the session.
+    /// Authenticated DATA is delivered at most once.
+    pub fn receive(
+        &mut self,
+        source: SocketAddr,
+        bytes: &[u8],
+        output: &mut [u8],
+    ) -> Result<ReceiveEvent, PacketProtectionError> {
+        let protection = self
+            .protection
+            .as_mut()
+            .ok_or(PacketProtectionError::SessionClosed)?;
+
+        let kind = decode_packet(bytes)?.header.kind;
+
+        let result = match kind {
+            PacketType::Data => protection
+                .open(source, PacketType::Data, bytes, output)
+                .map(ReceiveEvent::Data),
+
+            PacketType::Close => protection
+                .open(source, PacketType::Close, bytes, &mut [])
+                .map(|_| ReceiveEvent::Closed),
+
+            _ => Err(PacketProtectionError::UnexpectedPacket),
+        };
+
+        if matches!(
+            &result,
+            Ok(ReceiveEvent::Closed) | Err(PacketProtectionError::InvalidCiphertextLength)
+        ) {
+            self.close_local();
+        }
+
+        result
     }
 
     /// Return cached READY only for an exact duplicate of the
@@ -201,8 +323,12 @@ impl EstablishedSession {
     ///
     /// The caller must enforce deadlines and transport rate limits.
     /// This operation never performs new encryption.
-    pub fn retry_ready(&mut self, source: SocketAddr, bytes: &[u8]) -> Option<&[u8; READY_SIZE]> {
-        if source != self.protection.remote_endpoint {
+    pub fn retry_ready(
+        &mut self,
+        source: SocketAddr,
+        bytes: &[u8],
+    ) -> Option<&[u8; crate::READY_SIZE]> {
+        if self.is_closed() || source != self.remote_endpoint {
             return None;
         }
 

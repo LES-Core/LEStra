@@ -2,15 +2,15 @@ use core::fmt;
 use std::net::SocketAddr;
 
 use lestra_codec::{
-    AEAD_TAG_LEN, CodecError, HEADER_LEN, MAX_DATAGRAM_LEN, MAX_PACKET_NUMBER_EXCLUSIVE,
-    PacketHeader, PacketType, decode_packet, encode_header,
+    AEAD_TAG_LEN, CodecError, HEADER_LEN, MAX_PACKET_NUMBER_EXCLUSIVE, PacketHeader, PacketType,
+    decode_packet, encode_header,
 };
 use lestra_core::ReplayWindow;
 use snow::StatelessTransportState;
 
 use super::VerifiedNoise;
 
-const MAX_PLAINTEXT_LEN: usize = MAX_DATAGRAM_LEN - HEADER_LEN - AEAD_TAG_LEN;
+const MAX_PLAINTEXT_LEN: usize = crate::MAX_DATA_SIZE;
 
 #[derive(Debug)]
 pub enum PacketProtectionError {
@@ -23,6 +23,7 @@ pub enum PacketProtectionError {
     UnexpectedPeer,
     InvalidCiphertextLength,
     InvalidConnectionId,
+    SessionClosed,
 }
 
 impl fmt::Display for PacketProtectionError {
@@ -37,6 +38,7 @@ impl fmt::Display for PacketProtectionError {
             Self::UnexpectedPeer => f.write_str("unexpected remote endpoint"),
             Self::InvalidConnectionId => f.write_str("unexpected destination connection ID"),
             Self::InvalidCiphertextLength => f.write_str("unexpected ciphertext length"),
+            Self::SessionClosed => f.write_str("session is closed"),
         }
     }
 }
@@ -80,6 +82,11 @@ impl PacketProtection {
             remote_receive_cid: verified.remote_receive_cid,
             remote_endpoint: verified.remote_endpoint,
         })
+    }
+
+    /// Whether this sending state can no longer protect new packets.
+    pub(super) fn send_exhausted(&self) -> bool {
+        self.next_send >= MAX_PACKET_NUMBER_EXCLUSIVE
     }
 
     /// Encrypt a new protected packet with its complete wire header.
@@ -252,6 +259,7 @@ impl PacketProtection {
 mod tests {
     use super::*;
     use crate::{CONFIRM_SIZE, ClientStart, ServerStart};
+    use lestra_codec::MAX_DATAGRAM_LEN;
     use snow::{Builder, params::NoiseParams};
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -410,6 +418,8 @@ mod tests {
             decode_packet(&output[..len])?.header.packet_number,
             MAX_PACKET_NUMBER_EXCLUSIVE - 1
         );
+
+        assert!(protection.send_exhausted());
 
         assert!(matches!(
             protection.seal(PacketType::Data, b"overflow", &mut output),
