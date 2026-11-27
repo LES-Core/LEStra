@@ -373,3 +373,37 @@ fn server_close_retires_session() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn pending_capacity_is_limited_per_ip() -> TestResult {
+    let now = Instant::now();
+
+    let mut table = SessionTable::new(10, 5);
+
+    let (_, first) = pending_pair([1; 8], [2; 8], addr(4000))?;
+
+    let (_, second) = pending_pair([3; 8], [4; 8], addr(4001))?;
+
+    table.insert_pending(first, now)?;
+    table.insert_pending(second, now)?;
+
+    let ip = addr(4000).ip();
+
+    assert_eq!(table.pending_for_ip(ip), 2);
+
+    assert!(table.has_pending_capacity());
+
+    assert!(!table.has_pending_capacity_for_ip(ip, 2,));
+
+    let other_ip = SocketAddr::from(([127, 0, 0, 2], 4000)).ip();
+
+    assert!(table.has_pending_capacity_for_ip(other_ip, 2,));
+
+    assert!(table.remove([2; 8]));
+
+    assert_eq!(table.pending_for_ip(ip), 1);
+
+    assert!(table.has_pending_capacity_for_ip(ip, 2,));
+
+    Ok(())
+}

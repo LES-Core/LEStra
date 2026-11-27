@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt, net::SocketAddr, time::Instant};
+use std::{
+    collections::HashMap,
+    fmt,
+    net::{IpAddr, SocketAddr},
+    time::Instant,
+};
 
 use lestra_codec::{CodecError, PacketType, decode_packet};
 
@@ -6,6 +11,7 @@ use lestra_crypto::{
     EstablishedSession, PacketProtectionError, READY_SIZE, ReceiveEvent, ServerAwaitingConfirm,
 };
 
+use crate::admission::normalize_ip;
 use crate::timer::HANDSHAKE_TIMEOUT;
 
 pub type ConnectionId = [u8; 8];
@@ -335,5 +341,20 @@ impl SessionTable {
         }
 
         previous - self.pending.len()
+    }
+
+    /// Count pending handshakes belonging to one IP address.
+    pub fn pending_for_ip(&self, ip: IpAddr) -> usize {
+        let ip = normalize_ip(ip);
+
+        self.pending
+            .values()
+            .filter(|entry| normalize_ip(entry.session.remote_endpoint().ip()) == ip)
+            .count()
+    }
+
+    /// Check global and per-IP pending capacity.
+    pub fn has_pending_capacity_for_ip(&self, ip: IpAddr, limit: usize) -> bool {
+        self.has_pending_capacity() && self.pending_for_ip(ip) < limit
     }
 }
