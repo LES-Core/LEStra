@@ -280,6 +280,8 @@ name = "lestra-transport-udp"
 version = "0.1.0"
 dependencies = [
  "lestra-codec",
+ "lestra-crypto",
+ "snow",
 ]
 
 [[package]]
